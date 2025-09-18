@@ -1,29 +1,30 @@
-import prisma from '../../lib/db.js'
+export const config = { runtime: 'nodejs' };
+
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
 
 export default async function handler(req, res) {
-  const region = req.query.region || 'All'
-  const limit = Math.min(Number(req.query.limit || 10), 25)
+  const region = String(req.query.region || 'All');
+  const limit = Math.min(parseInt(req.query.limit || '10', 10), 20);
 
-  try {
-    const themes = await prisma.theme.findMany({
-      where: { region },
-      orderBy: [{ created_at: 'desc' }, { heat: 'desc' }],
-      take: limit
-    })
+  // If you don’t have a themes table yet, derive from latest leaders snapshot.
+  const latest = await prisma.researchRun.findFirst({
+    where: { region },
+    orderBy: { created_at: 'desc' }
+  });
 
-    const data = themes.map(t => ({
-      theme: t.theme,
-      heat: t.heat,
-      momentum: t.momentum,
-      forecast_heat: t.forecast ?? null,
-      confidence: t.confidence ?? null,
-      act_watch_avoid: t.awa ?? null,
-      links: t.links
-    }))
+  if (!latest) return res.json({ data: [] });
 
-    res.status(200).json({ ok:true, data })
-  } catch (e) {
-    console.error(e)
-    res.status(500).json({ ok:false, data: [] })
-  }
+  const leaders = latest.leaders_json || [];
+  const themes = leaders.slice(0, limit).map(l => ({
+    theme: l.entity,
+    heat: Math.max(30, Math.min(100, Math.round(l.score))), // normalize for UI
+    momentum: l.trend >= 0.5 ? 1 : -1,                      // placeholder
+    forecast_heat: Math.round(l.score * 1.1),               // naive +10%
+    confidence: 0.55,
+    act_watch_avoid: (l.score >= 60 ? 'ACT' : l.score >= 45 ? 'WATCH' : 'AVOID'),
+    links: l.urls || []
+  }));
+
+  res.json({ data: themes });
 }
