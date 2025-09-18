@@ -2,18 +2,19 @@
   "name": "trend-analyser",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=18" },
   "scripts": {
-    "dev": "npm --prefix client run dev",
-    "build": "npm --prefix client run build",
-    "postinstall": "prisma generate"
+    "build": "echo \"(serverless functions build at deploy)\"",
+    "vercel-build": "npm ci && npm --prefix client ci && npm --prefix client run build",
+    "db:push": "prisma db push",
+    "db:seed": "node api/providers/seed.js"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
-    "dayjs": "^1.11.11",
-    "pdfkit": "^0.14.0"
+    "google-trends-api": "^4.9.2",
+    "googleapis": "^131.0.0"
   },
   "devDependencies": {
     "prisma": "^5.22.0"
-  },
-  "engines": { "node": ">=18" }
+  }
 }

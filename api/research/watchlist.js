@@ -1,50 +1,51 @@
 // api/research/watchlist.js
 import { prisma } from '../../lib/db.js';
+export const config = { runtime: 'nodejs' };
 
 export default async function handler(req, res) {
-  const region = String(req.query.region || req.body?.region || 'All');
+  const region = (req.query.region || req.body?.region || 'All').trim();
 
   try {
     if (req.method === 'GET') {
-      const wl = await prisma.watchlist.findUnique({ where: { region } }).catch(()=>null);
-      return res.status(200).json({ region, keywords: wl?.keywords || [] });
+      const w = await prisma.watchlist.findUnique({ where: { region } });
+      res.status(200).json({ ok:true, keywords: w?.keywords || [] });
+      return;
     }
 
     if (req.method === 'POST') {
       const { keywords = [] } = req.body || {};
-      const unique = Array.from(new Set((keywords || []).map(s => String(s).toLowerCase().trim()).filter(Boolean)));
-      await prisma.watchlist.upsert({
+      const kw = [...new Set(keywords.map(k=>k.trim()).filter(Boolean))];
+      const w = await prisma.watchlist.upsert({
         where: { region },
-        update: { keywords: unique },
-        create: { region, keywords: unique }
+        update: { keywords: kw },
+        create: { region, keywords: kw }
       });
-      return res.status(200).json({ region, keywords: unique });
+      res.status(200).json({ ok:true, keywords: w.keywords });
+      return;
     }
 
     if (req.method === 'PATCH') {
-      const { add = [], remove = [] } = req.body || {};
-      const wl = await prisma.watchlist.findUnique({ where: { region } });
-      const current = new Set(wl?.keywords || []);
-      add.forEach(k => current.add(String(k).toLowerCase().trim()));
-      remove.forEach(k => current.delete(String(k).toLowerCase().trim()));
-      const next = Array.from(current);
-      await prisma.watchlist.upsert({
+      const { remove = [] } = req.body || {};
+      const w = await prisma.watchlist.findUnique({ where: { region } });
+      const next = (w?.keywords || []).filter(k => !remove.includes(k));
+      const w2 = await prisma.watchlist.upsert({
         where: { region },
         update: { keywords: next },
         create: { region, keywords: next }
       });
-      return res.status(200).json({ region, keywords: next });
+      res.status(200).json({ ok:true, keywords: w2.keywords });
+      return;
     }
 
     if (req.method === 'DELETE') {
-      await prisma.watchlist.delete({ where: { region } }).catch(()=>null);
-      return res.status(200).json({ region, keywords: [] });
+      await prisma.watchlist.delete({ where: { region } }).catch(()=>{});
+      res.status(200).json({ ok:true });
+      return;
     }
 
-    res.setHeader('Allow', ['GET','POST','PATCH','DELETE']);
-    return res.status(405).json({ error: 'Method not allowed' });
-  } catch (err) {
-    console.error('[research/watchlist] error', err);
-    return res.status(500).json({ error: 'Internal error' });
+    res.status(405).json({ ok:false, error:'Method not allowed' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:'Server error' });
   }
 }
