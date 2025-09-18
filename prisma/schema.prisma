@@ -1,26 +1,18 @@
-// prisma/schema.prisma
-
-// ---------- Data source ----------
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL") // e.g. postgres://...neon.tech/neondb?sslmode=require
+  url      = env("DATABASE_URL")
 }
 
-// ---------- Client generator ----------
 generator client {
   provider = "prisma-client-js"
 }
 
-// ---------- Models ----------
-
-// Stores the saved keyword list per region for the Research panel
 model Watchlist {
   region     String   @id
-  keywords   String[] // Postgres text[] (use Json if you prefer JSONB; see note below)
+  keywords   String[]
   updated_at DateTime @updatedAt
 }
 
-// Weekly/top snapshot of themes used by the Top Movers table
 model Theme {
   id              String   @id @default(cuid())
   region          String
@@ -29,22 +21,9 @@ model Theme {
   momentum        Float
   forecast_heat   Float?
   confidence      Float?
-  act_watch_avoid String?      // "ACT" | "WATCH" | "AVOID" (free text for now)
-  links           String[] @default([]) // supporting article links
+  act_watch_avoid String?
+  links           String[] @default([])
   week_of         DateTime @default(now())
 
   @@index([region, week_of])
 }
-
-/*
-If you prefer JSONB for arrays instead of Postgres text[], you can switch:
-
-- In Watchlist:
-    keywords   Json
-- In Theme:
-    links      Json @default("[]")
-
-Then run:
-  npx prisma db push
-  npx prisma generate
-*/
