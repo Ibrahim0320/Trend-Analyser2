@@ -1,0 +1,19 @@
+{
+  "name": "trend-analyser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "dayjs": "^1.11.11",
+    "pdfkit": "^0.14.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  },
+  "engines": { "node": ">=18" }
+}
