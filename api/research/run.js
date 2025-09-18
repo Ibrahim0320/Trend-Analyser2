@@ -14,38 +14,47 @@ export default async function handler(req, res) {
       .map(s => String(s).toLowerCase().trim())
       .filter(Boolean);
 
-    // Try read saved list if none provided
+    // Load saved if none provided
     let active = list;
     if (!keywords?.length) {
       const wl = await prisma.watchlist.findUnique({ where: { region } }).catch(()=>null);
       if (wl?.keywords?.length) active = wl.keywords;
     }
 
-    // --- Fallback scorer (until external adapters are wired) -----------------
-    // Deterministic pseudo-signal so you get stable results across deploys.
+    // Fallback scoring (until signal adapters are plugged)
     const seed = (region + ':' + active.join('|')).split('').reduce((a,c)=> (a*33 + c.charCodeAt(0)) >>> 0, 5381);
-    const rand = (i) => {
-      // xorshift
-      let x = (seed ^ (i+1)*2654435761) >>> 0;
-      x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
-      return (x >>> 0) / 2**32;
-    };
+    const rand = (i) => { let x = (seed ^ (i+1)*2654435761) >>> 0; x ^= x<<13; x ^= x>>>17; x ^= x<<5; return (x>>>0)/2**32; };
 
-    const leaders = active.map((k, i) => {
-      const heat = 42 + Math.round(rand(i)*40);              // 42..82
-      const momentum = rand(i+7) > 0.48 ? 1 : -1;            // up/down arrow
-      const vol = 180 + Math.round(rand(i+13)*9800);         // ~200..10k
-      const trend = 2.2 + rand(i+29)*6;                      // x-over-baseline
+    let leaders = active.map((k, i) => {
+      const heat = 42 + Math.round(rand(i)*40);
+      const momentum = rand(i+7) > 0.48 ? 1 : -1;
+      const vol = 180 + Math.round(rand(i+13)*9800);
+      const trend = 2.2 + rand(i+29)*6;
       const score = heat * (momentum > 0 ? 1.05 : 0.9);
       return {
         entity: k,
         type: guessType(k),
-        trend: (trend * 100) | 0,          // show as %
+        trend: (trend * 100) | 0,
         volume: vol,
         score: Number(score.toFixed(2)),
-        urls: [] // we’ll fill these when solid sources are plugged
+        urls: []
       };
     }).sort((a,b)=> b.score - a.score);
+
+    // Pull reputable citations
+    const citesResp = await fetch(`${process.env.VERCEL_URL ? 'https://' + process.env.VERCEL_URL : ''}/api/ingest/news`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keywords: active, limitPerKeyword: 3 })
+    }).then(r => r.ok ? r.json() : { citations: [], count: 0 }).catch(()=>({ citations: [], count: 0 }));
+
+    const citations = (citesResp.citations || []).map(c => ({ entity: c.entity, url: c.url, source: c.source, title: c.title }));
+
+    // attach one “best” link per leader if available
+    leaders = leaders.map(L => {
+      const hit = citations.find(c => c.entity === L.entity);
+      return hit ? { ...L, urls: [hit.url] } : L;
+    });
 
     const rising = leaders
       .filter(l => l.score >= leaders[0]?.score * 0.7)
@@ -55,14 +64,14 @@ export default async function handler(req, res) {
     const payload = {
       leaders,
       rising,
-      sourceCounts: { trends: leaders.length, youtube: 0, gdelt: 0, reddit: 0 },
-      whyMatters: 'Signals pipeline placeholder. DB + keys verified; add sources/model next.',
+      sourceCounts: { trends: leaders.length, youtube: 0, gdelt: 0, reddit: 0, news: citations.length },
+      whyMatters: 'External fashion publications report related signals; rankings reflect relative heat & volume until full model is enabled.',
       aheadOfCurve: [
-        'Prototype 3 looks & test creatives; measure saves/comments vs baseline.',
-        'Pre-book core neutrals; validate a bold accent color in small buy.',
-        'Add alert: 7-day heat > 1.3× across ≥2 sources (when sources are live).'
+        'Brief creators with top-2 items; track saves/comments vs baseline.',
+        'Line up imagery to test color accents on winner items.',
+        'Add alert: if 2+ reputable sources publish within 7d for a keyword, bump priority.'
       ],
-      citations: [] // we’ll populate with {entity,url} once adapters are enabled
+      citations
     };
 
     return res.status(200).json({ ok: true, data: payload });
@@ -74,8 +83,8 @@ export default async function handler(req, res) {
 
 function guessType(k) {
   const s = k.toLowerCase();
-  if (['trench','trenchcoat','puffer','loafer','loafer(s)','jacket','cardigan'].some(t => s.includes(t))) return 'item';
-  if (['cozy','quiet luxury','preppy','gorpcore','paris','dior'].some(t => s.includes(t))) return 'topic';
+  if (['trench','trenchcoat','puffer','loafer','loafers','jacket','cardigan','knitwear','sweater'].some(t => s.includes(t))) return 'item';
+  if (['cozy','quiet luxury','preppy','gorpcore','paris','dior','luxury'].some(t => s.includes(t))) return 'topic';
   return 'topic';
 }
 function fmtVol(x){ return x >= 1000 ? `${Math.round(x/100)/10}k` : `${x}`; }
