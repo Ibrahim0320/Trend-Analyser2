@@ -1,22 +1,21 @@
 // api/themes/top.js
-export const config = { runtime: 'nodejs' };
-
 import { prisma } from '../../lib/db.js';
 
-/**
- * GET /api/themes/top?region=Nordics&limit=10
- */
 export default async function handler(req, res) {
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', ['GET']);
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
   try {
     const region = String(req.query.region || 'All');
-    const limit = Math.max(1, Math.min(50, Number(req.query.limit || 10)));
+    const limit = Math.min(parseInt(req.query.limit || '10', 10), 50);
 
-    // If you store themes in a table named Theme (id, org/region, label, heat, momentum, etc.)
-    // This returns the latest for the region. Adjust to your schema.
+    // If you’ve seeded Theme weekly snapshots, return them; otherwise return [].
     const rows = await prisma.theme.findMany({
       where: { region },
-      orderBy: [{ week_of: 'desc' }, { heat: 'desc' }],
-      take: limit,
+      orderBy: [{ heat: 'desc' }, { week_of: 'desc' }],
+      take: limit
     });
 
     const data = rows.map(r => ({
@@ -26,12 +25,12 @@ export default async function handler(req, res) {
       forecast_heat: r.forecast_heat ?? null,
       confidence: r.confidence ?? null,
       act_watch_avoid: r.act_watch_avoid ?? null,
-      links: r.links ?? [],
+      links: r.links ?? []
     }));
 
-    return res.status(200).json({ ok: true, data });
+    return res.status(200).json({ data });
   } catch (err) {
-    console.error('[api/themes/top] error:', err);
-    return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    console.error('[themes/top] error', err);
+    return res.status(500).json({ error: 'Internal error' });
   }
 }
