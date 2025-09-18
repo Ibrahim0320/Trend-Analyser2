@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react'
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
+// same-origin by default; no CORS
+const API_BASE = ''; 
 const API = (p) => `${API_BASE}${p}`;
+
 
 
 const H = ({children}) => <h1>{children}</h1>
