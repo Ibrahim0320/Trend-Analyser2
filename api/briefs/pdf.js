@@ -1,7 +1,8 @@
 import PDFDocument from 'pdfkit'
 import prisma from '../../lib/db.js'
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs' }; // <- unversioned here
+
 
 
 function bufferFromDoc(doc) {
