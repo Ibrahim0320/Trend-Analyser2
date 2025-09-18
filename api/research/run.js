@@ -5,7 +5,7 @@ import { fetchGdeltSignals } from '../../lib/providers/gdelt.js';
 import { fetchTrendsSignals } from '../../lib/providers/trends.js';
 import { scoreSignal, confidenceFromMix } from '../../lib/providers/score.js';
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs22.x' };
 
 async function collectSignals({ region, keywords }) {
   const all = [];

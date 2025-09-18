@@ -1,6 +1,6 @@
 // api/research/watchlist.js
 import { prisma } from '../../lib/db.js';
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs22.x' };
 
 export default async function handler(req, res) {
   const region = (req.query.region || req.body?.region || 'All').trim();
