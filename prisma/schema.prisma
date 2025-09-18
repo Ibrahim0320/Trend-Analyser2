@@ -1,40 +1,50 @@
+// prisma/schema.prisma
+
+// ---------- Data source ----------
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // e.g. postgres://...neon.tech/neondb?sslmode=require
+}
+
+// ---------- Client generator ----------
 generator client {
   provider = "prisma-client-js"
 }
 
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
+// ---------- Models ----------
 
-model ResearchRun {
-  id            String   @id @default(cuid())
-  created_at    DateTime @default(now())
-  region        String
-  keywords_json Json
-  leaders_json  Json
-  rising_json   Json
-  why_matters   String
-  ahead_json    Json
-  citations_json Json
-}
-
-
+// Stores the saved keyword list per region for the Research panel
 model Watchlist {
-  region     String  @id
-  updated_at DateTime @default(now())
-  keywords   Json     // array of strings
+  region     String   @id
+  keywords   String[] // Postgres text[] (use Json if you prefer JSONB; see note below)
+  updated_at DateTime @updatedAt
 }
 
+// Weekly/top snapshot of themes used by the Top Movers table
 model Theme {
-  id         String   @id @default(cuid())
-  created_at DateTime @default(now())
-  region     String
-  theme      String
-  heat       Float
-  momentum   Float
-  forecast   Float?
-  confidence Float?
-  awa        String?  // ACT | WATCH | AVOID
-  links      Json     // array of urls
+  id              String   @id @default(cuid())
+  region          String
+  label           String
+  heat            Float
+  momentum        Float
+  forecast_heat   Float?
+  confidence      Float?
+  act_watch_avoid String?      // "ACT" | "WATCH" | "AVOID" (free text for now)
+  links           String[] @default([]) // supporting article links
+  week_of         DateTime @default(now())
+
+  @@index([region, week_of])
 }
+
+/*
+If you prefer JSONB for arrays instead of Postgres text[], you can switch:
+
+- In Watchlist:
+    keywords   Json
+- In Theme:
+    links      Json @default("[]")
+
+Then run:
+  npx prisma db push
+  npx prisma generate
+*/

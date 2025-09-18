@@ -1,30 +1,37 @@
+// api/themes/top.js
 export const config = { runtime: 'nodejs' };
 
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
+import { prisma } from '../../lib/db.js';
 
+/**
+ * GET /api/themes/top?region=Nordics&limit=10
+ */
 export default async function handler(req, res) {
-  const region = String(req.query.region || 'All');
-  const limit = Math.min(parseInt(req.query.limit || '10', 10), 20);
+  try {
+    const region = String(req.query.region || 'All');
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit || 10)));
 
-  // If you don’t have a themes table yet, derive from latest leaders snapshot.
-  const latest = await prisma.researchRun.findFirst({
-    where: { region },
-    orderBy: { created_at: 'desc' }
-  });
+    // If you store themes in a table named Theme (id, org/region, label, heat, momentum, etc.)
+    // This returns the latest for the region. Adjust to your schema.
+    const rows = await prisma.theme.findMany({
+      where: { region },
+      orderBy: [{ week_of: 'desc' }, { heat: 'desc' }],
+      take: limit,
+    });
 
-  if (!latest) return res.json({ data: [] });
+    const data = rows.map(r => ({
+      theme: r.label,
+      heat: r.heat,
+      momentum: r.momentum,
+      forecast_heat: r.forecast_heat ?? null,
+      confidence: r.confidence ?? null,
+      act_watch_avoid: r.act_watch_avoid ?? null,
+      links: r.links ?? [],
+    }));
 
-  const leaders = latest.leaders_json || [];
-  const themes = leaders.slice(0, limit).map(l => ({
-    theme: l.entity,
-    heat: Math.max(30, Math.min(100, Math.round(l.score))), // normalize for UI
-    momentum: l.trend >= 0.5 ? 1 : -1,                      // placeholder
-    forecast_heat: Math.round(l.score * 1.1),               // naive +10%
-    confidence: 0.55,
-    act_watch_avoid: (l.score >= 60 ? 'ACT' : l.score >= 45 ? 'WATCH' : 'AVOID'),
-    links: l.urls || []
-  }));
-
-  res.json({ data: themes });
+    return res.status(200).json({ ok: true, data });
+  } catch (err) {
+    console.error('[api/themes/top] error:', err);
+    return res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
 }
