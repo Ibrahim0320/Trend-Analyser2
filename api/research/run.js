@@ -13,11 +13,14 @@ async function collectSignals({ region, keywords }) {
     const kw = kwRaw.trim();
     if (!kw) continue;
 
+    // AFTER
+    const safe = async (p) => { try { return await p; } catch { return []; } };
     const [yt, news, tr] = await Promise.all([
-      fetchYouTubeSignals({ apiKey: process.env.YOUTUBE_API_KEY, query: kw }),
-      fetchGdeltSignals({ query: kw }),
-      fetchTrendsSignals({ query: kw })
+      safe(fetchYouTubeSignals({ apiKey: process.env.YOUTUBE_API_KEY, query: kw })),
+      safe(fetchGdeltSignals({ query: kw })),
+      safe(fetchTrendsSignals({ query: kw }))
     ]);
+
 
     const merged = [
       ...yt.map(s => ({ ...s, entity: kw, entityType: 'item', region })),
@@ -31,16 +34,22 @@ async function collectSignals({ region, keywords }) {
       const sc = scoreSignal(s.provider, s, hoursAgo);
       s.score = sc;
 
-      await prisma.signal.create({
-        data: {
-          region: s.region, entity: s.entity, entityType: s.entityType,
-          provider: s.provider, sourceId: s.sourceId || null,
-          views: s.views, likes: s.likes, comments: s.comments, shares: s.shares,
-          searchVol: s.searchVol, newsRank: s.newsRank,
-          engagement: s.engagement, velocity: s.velocity, authority: s.authority,
-          score: sc, observedAt: s.observedAt || new Date()
-        }
-      });
+// AFTER
+      try {
+        await prisma.signal.create({
+          data: {
+            region: s.region, entity: s.entity, entityType: s.entityType,
+            provider: s.provider, sourceId: s.sourceId || null,
+            views: s.views, likes: s.likes, comments: s.comments, shares: s.shares,
+            searchVol: s.searchVol, newsRank: s.newsRank,
+            engagement: s.engagement, velocity: s.velocity, authority: s.authority,
+            score: sc, observedAt: s.observedAt || new Date()
+          }
+        });
+      } catch (_) {
+        // swallow row write errors; keep going
+      }
+
 
       all.push(s);
     }
