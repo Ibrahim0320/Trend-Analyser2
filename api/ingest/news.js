@@ -2,7 +2,7 @@
 // Pulls RSS from reputable fashion publications and returns
 // scored links per keyword. Dependency-free (no extra packages).
 
-export const config = { runtime: 'nodejs22.x' };
+export const config = { runtime: 'nodejs' };
 
 const FASHION_FEEDS = [
   { name: 'Vogue',                 rss: 'https://www.vogue.com/rss',                       w: 1.0 },

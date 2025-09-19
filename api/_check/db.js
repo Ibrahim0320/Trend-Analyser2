@@ -1,4 +1,4 @@
-export const config = { runtime: 'nodejs22.x' };
+export const config = { runtime: 'nodejs' };
 import { prisma } from '../../lib/db.js';
 export default async function handler(req, res) {
   try {

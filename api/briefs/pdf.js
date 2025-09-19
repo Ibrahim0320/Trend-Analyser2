@@ -1,7 +1,7 @@
 // api/briefs/pdf.js
 // Lightweight PDF (works on Node runtime). No custom fonts.
 
-export const config = { runtime: 'nodejs22.x' };
+export const config = { runtime: 'nodejs' };
 
 import PDFDocument from 'pdfkit';
 

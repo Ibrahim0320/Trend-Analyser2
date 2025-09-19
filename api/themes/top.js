@@ -1,6 +1,6 @@
 // api/themes/top.js
 import { prisma } from '../../lib/db.js';
-export const config = { runtime: 'nodejs22.x' };
+export const config = { runtime: 'nodejs' };
 
 export default async function handler(req, res) {
   try {
