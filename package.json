@@ -1,25 +1,19 @@
 {
   "name": "trend-analyser",
   "private": true,
-  "type": "module",
-  "engines": {
-    "node": "22.x"
-  },
   "scripts": {
-    "build": "echo \"(serverless functions build at deploy)\"",
-    "vercel-build": "npm ci && npm --prefix client ci && npm --prefix client run build",
-    "db:push": "prisma db push",
-    "db:seed": "node api/providers/seed.js"
+    "build": "npm --prefix client run build",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "^5.22.0",
-    "google-auth-library": "9.15.1",
-    "google-trends-api": "4.9.2",
-    "googleapis": "131.0.0",
-    "node-fetch": "2.7.0",
-    "uuid": "9.0.1"
+    "@prisma/client": "5.22.0",
+    "googleapis": "^131.0.0",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "prisma": "^5.22.0"
+    "prisma": "5.22.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

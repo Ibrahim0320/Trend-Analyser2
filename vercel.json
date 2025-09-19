@@ -1,5 +1,5 @@
 {
-  "buildCommand": "npm install && rm -rf client/node_modules client/package-lock.json && npm --prefix client install --no-audit --no-fund && npm --prefix client rebuild esbuild && npm --prefix client run build",
+  "buildCommand": "npm ci && npm --prefix client ci && npm --prefix client run build",
   "outputDirectory": "client/dist",
   "routes": [
     { "src": "^/api/(.*)$", "dest": "/api/$1" },
