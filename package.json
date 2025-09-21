@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@prisma/client": "5.22.0",
+    "google-trends-api": "^4.9.2",
     "googleapis": "^131.0.0",
     "node-fetch": "^3.3.2"
   },
