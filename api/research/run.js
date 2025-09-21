@@ -96,11 +96,10 @@ export default async function handler(req, res) {
     // Score and persist (defensively)
     const scored = collected.map((s) => ({ ...s, score: scoreOne(s) }));
 
-    // Persist each row, but never let a single bad row abort the request
-    // Use a transaction of best-effort creates (no unique constraint assumed on Signal)
-    await prisma.$transaction(
-      scored.map((s) =>
-        prisma.signal.create({
+    // Persist each row one-by-one; never let a single bad row abort the request
+    for (const s of scored) {
+      try {
+        await prisma.signal.create({
           data: {
             region: s.region,
             entity: s.entity,
@@ -119,10 +118,11 @@ export default async function handler(req, res) {
             score: s.score,
             observedAt: s.observedAt,
           },
-        }).catch(() => null) // swallow row write errors inside the transaction item
-      ),
-      { timeout: 15000 } // be polite to the serverless runtime
-    ).catch(() => null); // swallow transaction-level errors so the API still responds
+        });
+      } catch (e) {
+        // swallow row write errors; keep going
+      }
+    }
 
     // Return a compact, UI-friendly payload
     const byEntity = new Map();
