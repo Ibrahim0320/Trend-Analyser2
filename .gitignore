@@ -1,7 +1,13 @@
-.vercel
-client/node_modules
+# dependencies
 node_modules/
 client/node_modules/
+
+# build artifacts
 client/dist/
 dist/
+
+# vercel local stuff
 .vercel/
+
+# misc
+.DS_Store

@@ -19,13 +19,12 @@ const safe = async (promise, fallback = []) => {
 
 // --- tiny helper: simple, transparent scoring (kept local to avoid deps mismatch) ---
 function scoreOne(s) {
-  const viewsTerm = Math.log10((s.views ?? 0) + 1);      // 0..~6 for viral vids, stabilizes small numbers
-  const engage    = Number(s.engagement ?? 0);           // 0..1-ish (your providers compute this)
-  const auth      = Number(s.authority ?? 0);            // 0..1
-  const vel       = Number(s.velocity ?? 0);             // 0..1
-  const newsRank  = Number(s.newsRank ?? 0);             // 0..1
+  const viewsTerm = Math.log10((s.views ?? 0) + 1);
+  const engage    = Number(s.engagement ?? 0);
+  const auth      = Number(s.authority ?? 0);
+  const vel       = Number(s.velocity ?? 0);
+  const newsRank  = Number(s.newsRank ?? 0);
 
-  // weights chosen to be robust if some fields are missing
   const score =
     0.40 * engage +
     0.25 * auth +
@@ -45,6 +44,7 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
     const region = (body.region || 'All').trim();
+
     // If caller passes keywords, prefer them; otherwise pull from Watchlist for region
     let keywords = Array.isArray(body.keywords)
       ? body.keywords
@@ -54,22 +54,28 @@ export default async function handler(req, res) {
       const wl = await prisma.watchlist.findUnique({ where: { region } }).catch(() => null);
       keywords = Array.isArray(wl?.keywords) && wl.keywords.length
         ? wl.keywords
-        : ['trenchcoat', 'loafers', 'quiet luxury']; // safe default
+        : ['trenchcoat', 'loafers', 'quiet luxury'];
     }
 
-    // Practical cap so one request can’t explode compute time
     keywords = keywords.map(s => String(s).trim()).filter(Boolean).slice(0, 8);
+
+    // Accept multiple env names for YouTube key
+    const YT_KEY =
+      process.env.YOUTUBE_API_KEY ||
+      process.env.NEXT_PUBLIC_YOUTUBE_API_KEY ||
+      process.env.YT_API_KEY ||
+      process.env.YOUTUBE_KEY ||
+      '';
 
     // Collect signals per keyword from all providers (fail-soft)
     const collected = [];
     for (const kw of keywords) {
       const [yt, news, tr] = await Promise.all([
-        safe(fetchYouTubeSignals({ apiKey: process.env.YOUTUBE_API_KEY, query: kw })),
+        safe(fetchYouTubeSignals({ apiKey: YT_KEY, query: kw })), // ← uses alias key
         safe(fetchGdeltSignals({ query: kw })),
         safe(fetchTrendsSignals({ query: kw })),
       ]);
 
-      // Normalize minimal shape expected downstream
       const now = new Date();
       const mark = (arr, provider) =>
         (arr || []).map((s) => ({
@@ -93,10 +99,9 @@ export default async function handler(req, res) {
       collected.push(...mark(yt, 'youtube'), ...mark(news, 'gdelt'), ...mark(tr, 'trends'));
     }
 
-    // Score and persist (defensively)
     const scored = collected.map((s) => ({ ...s, score: scoreOne(s) }));
 
-    // Persist each row one-by-one; never let a single bad row abort the request
+    // Best-effort persistence: skip bad rows, never crash the route
     for (const s of scored) {
       try {
         await prisma.signal.create({
@@ -119,12 +124,12 @@ export default async function handler(req, res) {
             observedAt: s.observedAt,
           },
         });
-      } catch (e) {
-        // swallow row write errors; keep going
+      } catch {
+        // swallow and continue
       }
     }
 
-    // Return a compact, UI-friendly payload
+    // Build a compact summary payload for the UI
     const byEntity = new Map();
     for (const s of scored) {
       const list = byEntity.get(s.entity) || [];
