@@ -1,6 +1,7 @@
 {
   "name": "trend-analyser",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "npm --prefix client run build",
     "postinstall": "prisma generate"
@@ -15,3 +16,4 @@
   },
   "engines": { "node": ">=18" }
 }
+
