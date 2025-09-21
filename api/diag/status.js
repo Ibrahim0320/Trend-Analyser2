@@ -14,7 +14,7 @@ export default async function handler(req, res) {
   // 3) Can we import Prisma client?
   let PrismaClient;
   try {
-    const mod = await import('../../node_modules/@prisma/client/index.js');
+    const mod = await import('@prisma/client/index-browser');
     PrismaClient = mod.PrismaClient;
     out.checks.prismaImport = true;
   } catch (e) {
