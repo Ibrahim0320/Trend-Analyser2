@@ -1,0 +1,4 @@
+# don't ship local/diagnostic stuff as functions
+api/hello.js
+api/diag/*
+api/providers/seed.js
