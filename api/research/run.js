@@ -17,7 +17,7 @@ const safe = async (promise, fallback = []) => {
   }
 };
 
-// --- tiny helper: simple, transparent scoring (kept local to avoid deps mismatch) ---
+// --- tiny helper: simple, transparent scoring ---
 function scoreOne(s) {
   const viewsTerm = Math.log10((s.views ?? 0) + 1);
   const engage    = Number(s.engagement ?? 0);
@@ -71,7 +71,7 @@ export default async function handler(req, res) {
     const collected = [];
     for (const kw of keywords) {
       const [yt, news, tr] = await Promise.all([
-        safe(fetchYouTubeSignals({ apiKey: YT_KEY, query: kw })), // ← uses alias key
+        safe(fetchYouTubeSignals({ apiKey: YT_KEY, query: kw })),
         safe(fetchGdeltSignals({ query: kw })),
         safe(fetchTrendsSignals({ query: kw })),
       ]);
@@ -101,7 +101,8 @@ export default async function handler(req, res) {
 
     const scored = collected.map((s) => ({ ...s, score: scoreOne(s) }));
 
-    // Best-effort persistence: skip bad rows, never crash the route
+    // Best-effort persistence with counters for diagnostics
+    let writes = 0, errors = 0;
     for (const s of scored) {
       try {
         await prisma.signal.create({
@@ -124,8 +125,9 @@ export default async function handler(req, res) {
             observedAt: s.observedAt,
           },
         });
-      } catch {
-        // swallow and continue
+        writes++;
+      } catch (e) {
+        errors++;
       }
     }
 
@@ -156,6 +158,8 @@ export default async function handler(req, res) {
       region,
       keywords,
       totalSignals: scored.length,
+      writes,            // ← how many rows actually persisted
+      writeErrors: errors,
       entities: summary,
     });
   } catch (err) {
