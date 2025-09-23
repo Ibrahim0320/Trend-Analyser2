@@ -58,7 +58,7 @@ export default async function handler(req, res) {
 
       // core values in 0..1
       const heat = safeNumber(aggL.avgScore);
-      const momentum = clampUnit( safeNumber(aggS.avgScore) - safeNumber(aggL.avgScore) );
+      const momentum = clampUnit(safeNumber(aggS.avgScore) - safeNumber(aggL.avgScore));
       const forecast = clampUnit(heat + momentum);
       const confidence = softClamp(aggL.count / 20); // ~1.0 once 20+ samples
 
@@ -66,7 +66,7 @@ export default async function handler(req, res) {
       const heatPct = toPct(heat);
       const forecastPct = toPct(forecast);
       const confidencePct = toPct(confidence);
-      const momentumPct = Math.round(momentum * 100);         // signed
+      const momentumPct = Math.round(momentum * 100); // signed
       const momentumSign = momentum > 0 ? 'up' : momentum < 0 ? 'down' : 'flat';
 
       const link = `https://www.youtube.com/results?search_query=${encodeURIComponent(entity)}`;
@@ -89,7 +89,7 @@ export default async function handler(req, res) {
         forecast: round4(forecast),
         confidence: round4(confidence),
 
-        // UI-friendly fields the table likely expects
+        // UI-friendly fields the table reads
         heatPct,
         forecastPct,
         confidencePct,
