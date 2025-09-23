@@ -81,11 +81,37 @@ function scoreOf({ eng, vel, auth }) {
 }
 
 // Roll up signals -> per-entity rows + citations
+// Prefer a provider-specific search URL when we have no concrete source URL
+function providerSearchUrl(entity, preferredProvider) {
+  const q = encodeURIComponent(entity);
+  switch ((preferredProvider || '').toLowerCase()) {
+    case 'youtube':
+      return `https://www.youtube.com/results?search_query=${q}`;
+    case 'tiktok':
+      return `https://www.tiktok.com/search?q=${q}`;
+    case 'instagram':
+      return `https://www.instagram.com/explore/tags/${q.replace(/%20/g, '')}/`;
+    case 'reddit':
+      return `https://www.reddit.com/search/?q=${q}`;
+    case 'gdelt':
+    case 'news':
+      return `https://news.google.com/search?q=${q}`;
+    case 'trends':
+      return `https://trends.google.com/trends/explore?q=${q}`;
+    default:
+      return `https://www.youtube.com/results?search_query=${q}`;
+  }
+}
+
+function isHttpUrl(v) {
+  return typeof v === 'string' && /^https?:\/\//i.test(v);
+}
+
 function rollupEntities({ region, signals, topK = 30 }) {
   const byEntity = new Map();
 
   for (const s of signals) {
-    const entity = (s.entity || '').trim();
+    const entity = String(s.entity || '').trim();
     if (!entity) continue;
 
     const { eng, vel, auth } = deriveEVA(s);
@@ -94,7 +120,7 @@ function rollupEntities({ region, signals, topK = 30 }) {
     const row = {
       provider: s.provider || 'unknown',
       title: s.title || s.entity || '',
-      url: s.url || s.link || null,
+      url: isHttpUrl(s.url) ? s.url : (isHttpUrl(s.link) ? s.link : null),
       observedAt: s.observedAt ? new Date(s.observedAt) : new Date(),
       eng, vel, auth, score,
       views: s.views ?? 0,
@@ -119,25 +145,28 @@ function rollupEntities({ region, signals, topK = 30 }) {
     // simple proxy forecast: 0.6*momentum + 0.4*heat (clip to 0..1)
     const forecast = clamp01(0.6 * momentum + 0.4 * heat);
 
-    // best link = highest score with a URL, else a provider search
-    let link = top.find(x => x.url)?.url || `https://www.youtube.com/results?search_query=${encodeURIComponent(entity)}`;
-
-    // citations: top 5 distinct providers/urls
+    // citations: top 5 distinct by provider + (url OR title), case-insensitive
     const citations = [];
     const seen = new Set();
     for (const x of top) {
-      const key = `${x.provider}|${x.url || x.title}`;
+      const key = `${(x.provider || '').toLowerCase()}|${String(x.url || x.title || '').toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
       citations.push({
         provider: x.provider,
         title: x.title || entity,
-        url: x.url || null,
+        url: isHttpUrl(x.url) ? x.url : null,
         authority: Number(x.auth?.toFixed?.(2) ?? x.auth) || 0,
         when: x.observedAt?.toISOString?.() ?? new Date().toISOString(),
       });
       if (citations.length >= 5) break;
     }
+
+    // best link = first cited real URL; if none, fallback to provider-specific search
+    const preferredProvider = top[0]?.provider || 'youtube';
+    const link =
+      (citations.find(c => isHttpUrl(c.url))?.url) ||
+      providerSearchUrl(entity, preferredProvider);
 
     rows.push({
       entity,
@@ -156,6 +185,7 @@ function rollupEntities({ region, signals, topK = 30 }) {
 
   return rows;
 }
+
 
 export const config = { runtime: 'nodejs' };
 
