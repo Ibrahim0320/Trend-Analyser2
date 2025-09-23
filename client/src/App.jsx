@@ -94,7 +94,7 @@ export default function App() {
 
       // Why this matters (OpenAI)
       setInsightLoading(true);
-      const brief = await fetch('/api/briefs/insight', {
+      const brief = await fetch('/api/insight', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ region, entities }),
