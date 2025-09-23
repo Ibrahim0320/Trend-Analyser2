@@ -9,40 +9,43 @@ export default function App() {
   const [keywords, setKeywords] = useState(DEFAULT_KEYWORDS);
   const [newKeyword, setNewKeyword] = useState('');
   const [busy, setBusy] = useState(false);
-
-  // Top Movers (themes)
   const [topMovers, setTopMovers] = useState([]);
 
-  // Build query string safely
-  const qs = useMemo(() => new URLSearchParams({ region, limit: '10' }).toString(), [region]);
+  const qs = useMemo(
+    () => new URLSearchParams({ region, limit: '10' }).toString(),
+    [region]
+  );
 
   useEffect(() => {
-    // Load Top Movers on first paint
     fetchTopMovers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qs]);
 
   async function fetchTopMovers() {
     try {
-      const url = `/api/themes/top?${qs}`;
-      const json = await fetch(url).then(r => r.json());
+      const res = await fetch(`/api/themes/top?${qs}`);
+      const json = await res.json();
       const raw = Array.isArray(json.data) ? json.data : [];
 
-      // Normalize for UI
       const rows = raw.map((it) => {
-        const heatPct = Number.isFinite(it.heatPct) ? it.heatPct
+        const heatPct = Number.isFinite(it.heatPct)
+          ? it.heatPct
           : Math.round((Number(it.heat) || 0) * 100);
 
-        const forecastPct = Number.isFinite(it.forecastPct) ? it.forecastPct
+        const forecastPct = Number.isFinite(it.forecastPct)
+          ? it.forecastPct
           : Math.round((Number(it.forecast) || 0) * 100);
 
-        const confidencePct = Number.isFinite(it.confidencePct) ? it.confidencePct
+        const confidencePct = Number.isFinite(it.confidencePct)
+          ? it.confidencePct
           : Math.round((Number(it.confidence) || 0) * 100);
 
-        const momentumPct = Number.isFinite(it.momentumPct) ? it.momentumPct
+        const momentumPct = Number.isFinite(it.momentumPct)
+          ? it.momentumPct
           : Math.round((Number(it.momentum) || 0) * 100);
 
-        const momentumSign = it.momentumSign ||
+        const momentumSign =
+          it.momentumSign ||
           (momentumPct > 0 ? 'up' : momentumPct < 0 ? 'down' : 'flat');
 
         return {
@@ -67,15 +70,12 @@ export default function App() {
   async function runResearch() {
     setBusy(true);
     try {
-      const payload = { region, keywords };
-      const res = await fetch('/api/research/run', {
+      await fetch('/api/research/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      // even if run returns data, we rely on /themes/top for the table
-      await res.json().catch(() => ({}));
-      // re-query Top Movers from DB
+        body: JSON.stringify({ region, keywords }),
+      }).then((r) => r.json().catch(() => ({})));
+
       await fetchTopMovers();
     } catch (e) {
       console.error('runResearch failed', e);
@@ -86,14 +86,13 @@ export default function App() {
 
   function addKeyword() {
     const k = newKeyword.trim();
-    if (!k) return;
-    if (keywords.includes(k)) return;
+    if (!k || keywords.includes(k)) return;
     setKeywords([...keywords, k]);
     setNewKeyword('');
   }
 
   function removeKeyword(word) {
-    setKeywords(keywords.filter(k => k !== word));
+    setKeywords(keywords.filter((k) => k !== word));
   }
 
   return (
@@ -122,10 +121,16 @@ export default function App() {
 
           <div className="row">
             <div className="keywords">
-              {keywords.map(k => (
+              {keywords.map((k) => (
                 <span key={k} className="chip">
                   {k}
-                  <button className="x" onClick={() => removeKeyword(k)} title="Remove">×</button>
+                  <button
+                    className="x"
+                    onClick={() => removeKeyword(k)}
+                    title="Remove"
+                  >
+                    ×
+                  </button>
                 </span>
               ))}
             </div>
@@ -133,18 +138,21 @@ export default function App() {
               <input
                 className="input"
                 value={newKeyword}
-                onChange={e => setNewKeyword(e.target.value)}
+                onChange={(e) => setNewKeyword(e.target.value)}
                 placeholder="Add keyword…"
-                onKeyDown={(e) => { if (e.key === 'Enter') addKeyword(); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') addKeyword();
+                }}
               />
-              <button className="btn" onClick={addKeyword}>Add</button>
+              <button className="btn" onClick={addKeyword}>
+                Add
+              </button>
             </div>
           </div>
         </div>
       </header>
 
       <main className="grid">
-        {/* Top Movers (themes) */}
         <section className="card">
           <h2>Top Movers (themes)</h2>
           <div className="table-wrap">
@@ -162,34 +170,45 @@ export default function App() {
               </thead>
               <tbody>
                 {topMovers.length === 0 && (
-                  <tr><td colSpan={7} className="muted">—</td></tr>
+                  <tr>
+                    <td colSpan={7} className="muted">
+                      —
+                    </td>
+                  </tr>
                 )}
                 {topMovers.map((r, i) => (
                   <tr key={`${r.theme}-${i}`}>
                     <td>{r.theme || '—'}</td>
-
-                    {/* Heat pill expects 0–100 */}
                     <td>
-                      <span className="pill">{Number.isFinite(r.heatPct) ? r.heatPct : 0}</span>
+                      <span className="pill">
+                        {Number.isFinite(r.heatPct) ? r.heatPct : 0}
+                      </span>
                     </td>
-
-                    {/* Momentum arrow + number (signed %) */}
                     <td className="mono">
                       <span className={`arrow ${r.momentumSign}`} aria-hidden />
                       {Number.isFinite(r.momentumPct) ? r.momentumPct : 0}
                     </td>
-
-                    {/* Forecast & Confidence as percent */}
-                    <td>{Number.isFinite(r.forecastPct) ? `${r.forecastPct}%` : '—'}</td>
-                    <td>{Number.isFinite(r.confidencePct) ? `${r.confidencePct}%` : '—'}</td>
-
-                    {/* A/W/A */}
+                    <td>
+                      {Number.isFinite(r.forecastPct)
+                        ? `${r.forecastPct}%`
+                        : '—'}
+                    </td>
+                    <td>
+                      {Number.isFinite(r.confidencePct)
+                        ? `${r.confidencePct}%`
+                        : '—'}
+                    </td>
                     <td>{r.awa || '—'}</td>
-
-                    {/* Link */}
                     <td>
                       {r.url ? (
-                        <a href={r.url} target="_blank" rel="noreferrer" title="Open">↗</a>
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open"
+                        >
+                          ↗
+                        </a>
                       ) : (
                         '—'
                       )}
@@ -201,11 +220,22 @@ export default function App() {
           </div>
         </section>
 
-        {/* You can wire up What's rising / Leaders similarly once we decide their data shape */}
-        <section className="card"><h2>What’s rising</h2><div className="muted">—</div></section>
-        <section className="card"><h2>Leaders (ranked)</h2><div className="muted">—</div></section>
-        <section className="card"><h2>Why this matters</h2><div className="muted">—</div></section>
-        <section className="card"><h2>Ahead of the curve</h2><div className="muted">—</div></section>
+        <section className="card">
+          <h2>What’s rising</h2>
+          <div className="muted">—</div>
+        </section>
+        <section className="card">
+          <h2>Leaders (ranked)</h2>
+          <div className="muted">—</div>
+        </section>
+        <section className="card">
+          <h2>Why this matters</h2>
+          <div className="muted">—</div>
+        </section>
+        <section className="card">
+          <h2>Ahead of the curve</h2>
+          <div className="muted">—</div>
+        </section>
       </main>
     </div>
   );
