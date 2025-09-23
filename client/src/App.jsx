@@ -50,28 +50,34 @@ function computeRising(entities, limit = 10) {
   const rows = [];
   for (const e of entities || []) {
     for (const s of e.top || []) {
-      // velocity is already normalized 0..1 in the provider normalization
-      const v = Number(s.velocity || 0);
-      if (v > 0) {
-        rows.push({
-          entity: e.entity,
-          provider: s.provider,
-          velocity: v,
-          authority: Number(s.authority || 0),
-          engagement: Number(s.engagement || 0),
-          link:
-            s.provider === 'youtube'
-              ? ytLink(s.sourceId, e.entity)
-              : s.provider === 'gdelt'
-              ? newsLink(e.entity)
-              : trendsLink(e.entity),
-        });
-      }
+      const vel = Number(s.velocity || 0);
+      const eng = Number(s.engagement || 0);
+      const auth = Number(s.authority || 0);
+      const score = Number(s.score || 0);
+
+      // If no velocity from providers, synthesize a lightweight “rise” score.
+      // Favor engagement + authority and lightly mix in score.
+      const riseScore = vel > 0 ? vel : (0.6 * eng + 0.4 * auth + 0.2 * score);
+
+      rows.push({
+        entity: e.entity,
+        provider: s.provider,
+        velocity: riseScore,           // we sort by this
+        authority: auth,
+        engagement: eng,
+        link:
+          s.provider === 'youtube'
+            ? (s.sourceId ? `https://www.youtube.com/watch?v=${s.sourceId}` : `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`)
+            : (s.provider === 'gdelt'
+                ? `https://news.google.com/search?q=${encodeURIComponent(e.entity)}`
+                : `https://trends.google.com/trends/explore?q=${encodeURIComponent(e.entity)}`),
+      });
     }
   }
   rows.sort((a, b) => b.velocity - a.velocity || b.authority - a.authority);
   return rows.slice(0, limit);
 }
+
 
 export default function App() {
   const [region, setRegion] = useState('Nordics');
