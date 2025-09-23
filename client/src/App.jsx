@@ -1,242 +1,276 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import './styles.css';
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const DEFAULT_REGION = 'Nordics';
-const DEFAULT_KEYWORDS = ['trenchcoat', 'loafers', 'quiet luxury'];
+/**
+ * Polished UI that keeps your existing endpoints and flows:
+ * - POST /api/research/run  (body: { region, keywords[]? })
+ * - GET  /api/themes/top?region=...&limit=10
+ * - GET/POST /api/research/watchlist
+ * - GET  /api/briefs/pdf?region=...&k=keyword1&k=keyword2...
+ */
+
+const REGIONS = ["Nordics", "US", "UK", "DACH", "Benelux", "All"];
 
 export default function App() {
-  const [region, setRegion] = useState(DEFAULT_REGION);
-  const [keywords, setKeywords] = useState(DEFAULT_KEYWORDS);
-  const [newKeyword, setNewKeyword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [topMovers, setTopMovers] = useState([]);
+  // ------- UI state -------
+  const [region, setRegion] = useState("Nordics");
+  const [input, setInput] = useState("");
+  const [chips, setChips] = useState(["trenchcoat", "loafers", "quiet luxury"]);
+  const [loadingRun, setLoadingRun] = useState(false);
+  const [loadingTop, setLoadingTop] = useState(false);
 
-  const qs = useMemo(
-    () => new URLSearchParams({ region, limit: '10' }).toString(),
-    [region]
+  // server data
+  const [top, setTop] = useState([]); // [{ theme, heat, momentum, forecast, confidence, awa, link }]
+  const [lastRunMeta, setLastRunMeta] = useState(null); // {totalSignals, entities: [...]}
+
+  const inputRef = useRef(null);
+
+  // -------- helpers ----------
+  const addChip = () => {
+    const v = input.trim();
+    if (!v) return;
+    if (!chips.includes(v)) setChips((c) => [...c, v]);
+    setInput("");
+    inputRef.current?.focus();
+  };
+  const removeChip = (v) => setChips((c) => c.filter((x) => x !== v));
+
+  // -------- API calls ----------
+  const fetchTop = async (r = region) => {
+    setLoadingTop(true);
+    try {
+      const res = await fetch(`/api/themes/top?region=${encodeURIComponent(r)}&limit=10`);
+      const js = await res.json();
+      // Expecting {ok, data:[{entity, avgScore, totalViews, avgEng, avgAuth, heat, momentum, forecast, confidence, awa, link}]}
+      setTop(js?.data ?? []);
+    } catch (err) {
+      console.error("top failed", err);
+      setTop([]);
+    } finally {
+      setLoadingTop(false);
+    }
+  };
+
+  const runResearch = async () => {
+    setLoadingRun(true);
+    try {
+      const res = await fetch("/api/research/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ region, keywords: chips }),
+      });
+      const js = await res.json();
+      setLastRunMeta({
+        totalSignals: js?.totalSignals ?? 0,
+        entities: js?.entities ?? [],
+      });
+      // Refresh the top movers once run completes
+      await fetchTop(region);
+      // Save watchlist silently
+      await saveWatchlistSilent();
+    } catch (err) {
+      console.error("run failed", err);
+    } finally {
+      setLoadingRun(false);
+    }
+  };
+
+  const saveWatchlistSilent = async () => {
+    try {
+      await fetch("/api/research/watchlist", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ region, keywords: chips }),
+      });
+    } catch {}
+  };
+
+  const loadWatchlist = async () => {
+    try {
+      const res = await fetch(`/api/research/watchlist?region=${encodeURIComponent(region)}`);
+      const js = await res.json();
+      if (Array.isArray(js?.keywords) && js.keywords.length) setChips(js.keywords);
+    } catch {}
+  };
+
+  // initial + region change
+  useEffect(() => {
+    fetchTop(region);
+    loadWatchlist();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [region]);
+
+  // derived: nice rows for the top table
+  const rows = useMemo(
+    () =>
+      (top || []).map((t) => ({
+        theme: t.theme || t.entity,
+        heat: Math.round((t.heat ?? 0)),
+        momentum: Math.round((t.momentum ?? 0)),
+        forecast: Math.round((t.forecast ?? 0) * 100),
+        confidence: `${Math.round((t.confidence ?? 0) * 100)}%`,
+        awa: t.awa ?? "Aware",
+        link:
+          t.link ||
+          (t.entity
+            ? `https://www.youtube.com/results?search_query=${encodeURIComponent(
+                t.entity
+              )}`
+            : "#"),
+      })),
+    [top]
   );
 
-  useEffect(() => {
-    fetchTopMovers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qs]);
-
-  async function fetchTopMovers() {
-    try {
-      const res = await fetch(`/api/themes/top?${qs}`);
-      const json = await res.json();
-      const raw = Array.isArray(json.data) ? json.data : [];
-
-      const rows = raw.map((it) => {
-        const heatPct = Number.isFinite(it.heatPct)
-          ? it.heatPct
-          : Math.round((Number(it.heat) || 0) * 100);
-
-        const forecastPct = Number.isFinite(it.forecastPct)
-          ? it.forecastPct
-          : Math.round((Number(it.forecast) || 0) * 100);
-
-        const confidencePct = Number.isFinite(it.confidencePct)
-          ? it.confidencePct
-          : Math.round((Number(it.confidence) || 0) * 100);
-
-        const momentumPct = Number.isFinite(it.momentumPct)
-          ? it.momentumPct
-          : Math.round((Number(it.momentum) || 0) * 100);
-
-        const momentumSign =
-          it.momentumSign ||
-          (momentumPct > 0 ? 'up' : momentumPct < 0 ? 'down' : 'flat');
-
-        return {
-          theme: it.theme || it.entity || '',
-          heatPct,
-          forecastPct,
-          confidencePct,
-          momentumPct,
-          momentumSign,
-          awa: it.awa || 'Aware',
-          url: it.url || it.link || null,
-        };
-      });
-
-      setTopMovers(rows);
-    } catch (e) {
-      console.error('fetchTopMovers failed', e);
-      setTopMovers([]);
-    }
-  }
-
-  async function runResearch() {
-    setBusy(true);
-    try {
-      await fetch('/api/research/run', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ region, keywords }),
-      }).then((r) => r.json().catch(() => ({})));
-
-      await fetchTopMovers();
-    } catch (e) {
-      console.error('runResearch failed', e);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function addKeyword() {
-    const k = newKeyword.trim();
-    if (!k || keywords.includes(k)) return;
-    setKeywords([...keywords, k]);
-    setNewKeyword('');
-  }
-
-  function removeKeyword(word) {
-    setKeywords(keywords.filter((k) => k !== word));
-  }
+  const pdfHref = useMemo(() => {
+    const qs = new URLSearchParams();
+    qs.set("region", region);
+    chips.forEach((k) => qs.append("k", k));
+    return `/api/briefs/pdf?${qs.toString()}`;
+  }, [region, chips]);
 
   return (
-    <div className="page">
-      <header className="hdr">
-        <h1>AI Trend Dashboard</h1>
-
+    <div className="container">
+      <div className="header">
+        <div className="brand">
+          <div className="logo" />
+          <h1>AI Trend Dashboard</h1>
+        </div>
         <div className="controls">
-          <div className="row">
-            <select
-              value={region}
-              onChange={(e) => setRegion(e.target.value)}
-              className="select"
-              aria-label="Region"
-            >
-              <option>Nordics</option>
-              <option>All</option>
-              <option>US</option>
-              <option>EU</option>
-            </select>
+          <select
+            className="select"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            aria-label="Region"
+          >
+            {REGIONS.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
 
-            <button className="btn" disabled={busy} onClick={runResearch}>
-              {busy ? 'Running…' : 'Run research'}
-            </button>
-          </div>
+          <button
+            className="btn primary"
+            onClick={runResearch}
+            disabled={loadingRun}
+            title="Aggregate YouTube + News + Trends for your keywords"
+          >
+            {loadingRun ? "Running…" : "Run research"}
+          </button>
+        </div>
+      </div>
 
-          <div className="row">
-            <div className="keywords">
-              {keywords.map((k) => (
-                <span key={k} className="chip">
-                  {k}
-                  <button
-                    className="x"
-                    onClick={() => removeKeyword(k)}
-                    title="Remove"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="addkw">
-              <input
-                className="input"
-                value={newKeyword}
-                onChange={(e) => setNewKeyword(e.target.value)}
-                placeholder="Add keyword…"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') addKeyword();
-                }}
-              />
-              <button className="btn" onClick={addKeyword}>
-                Add
-              </button>
-            </div>
+      {/* Working keywords */}
+      <div className="panel">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div className="meta">Working keywords:</div>
+          <div className="chips">
+            {chips.map((c) => (
+              <span key={c} className="chip">
+                {c}
+                <button onClick={() => removeChip(c)} aria-label={`remove ${c}`}>
+                  ✕
+                </button>
+              </span>
+            ))}
           </div>
         </div>
-      </header>
 
-      <main className="grid">
-        <section className="card">
-          <h2>Top Movers (themes)</h2>
-          <div className="table-wrap">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Theme</th>
-                  <th>Heat</th>
-                  <th>Momentum</th>
-                  <th>Forecast (2w)</th>
-                  <th>Confidence</th>
-                  <th>A/W/A</th>
-                  <th>Link</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topMovers.length === 0 && (
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <input
+            ref={inputRef}
+            className="input"
+            placeholder="Add keyword…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addChip()}
+          />
+          <button className="btn ghost" onClick={addChip}>Add</button>
+          <button className="btn ghost" onClick={() => setChips([])}>Reset working list</button>
+          <a className="btn ghost" href={pdfHref} target="_blank" rel="noreferrer">
+            Download Brief (PDF)
+          </a>
+        </div>
+
+        {lastRunMeta ? (
+          <div style={{ marginTop: 10 }} className="meta">
+            Last run: <b className="k">{lastRunMeta.totalSignals}</b> signals across{" "}
+            <b className="k">{lastRunMeta.entities?.length ?? 0}</b> themes.
+          </div>
+        ) : null}
+      </div>
+
+      {/* Top Movers */}
+      <div className="panel">
+        <h2>Top Movers (themes)</h2>
+        <div style={{ overflowX: "auto" }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ minWidth: 160 }}>Theme</th>
+                <th>Heat</th>
+                <th>Momentum</th>
+                <th>Forecast (2w)</th>
+                <th>Confidence</th>
+                <th>A/W/A</th>
+                <th>Link</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loadingTop
+                ? Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={`skel-${i}`}>
+                      <td><div className="skel" style={{ width: 140 }} /></td>
+                      <td><div className="skel" style={{ width: 40 }} /></td>
+                      <td><div className="skel" style={{ width: 40 }} /></td>
+                      <td><div className="skel" style={{ width: 60 }} /></td>
+                      <td><div className="skel" style={{ width: 60 }} /></td>
+                      <td><div className="skel" style={{ width: 60 }} /></td>
+                      <td><div className="skel" style={{ width: 80 }} /></td>
+                    </tr>
+                  ))
+                : rows.length === 0
+                ? (
                   <tr>
-                    <td colSpan={7} className="muted">
-                      —
+                    <td colSpan={7} className="meta">
+                      — No data yet. Run research to populate insights.
                     </td>
                   </tr>
-                )}
-                {topMovers.map((r, i) => (
-                  <tr key={`${r.theme}-${i}`}>
-                    <td>{r.theme || '—'}</td>
-                    <td>
-                      <span className="pill">
-                        {Number.isFinite(r.heatPct) ? r.heatPct : 0}
-                      </span>
-                    </td>
-                    <td className="mono">
-                      <span className={`arrow ${r.momentumSign}`} aria-hidden />
-                      {Number.isFinite(r.momentumPct) ? r.momentumPct : 0}
-                    </td>
-                    <td>
-                      {Number.isFinite(r.forecastPct)
-                        ? `${r.forecastPct}%`
-                        : '—'}
-                    </td>
-                    <td>
-                      {Number.isFinite(r.confidencePct)
-                        ? `${r.confidencePct}%`
-                        : '—'}
-                    </td>
-                    <td>{r.awa || '—'}</td>
-                    <td>
-                      {r.url ? (
-                        <a
-                          href={r.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="Open"
-                        >
+                )
+                : rows.map((r) => (
+                    <tr key={r.theme}>
+                      <td>{r.theme}</td>
+                      <td>{r.heat}</td>
+                      <td>{r.momentum}</td>
+                      <td>{r.forecast}%</td>
+                      <td>{r.confidence}</td>
+                      <td>{r.awa}</td>
+                      <td>
+                        <a className="link" href={r.link} target="_blank" rel="noreferrer">
                           ↗
                         </a>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                      </td>
+                    </tr>
+                  ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-        <section className="card">
-          <h2>What’s rising</h2>
-          <div className="muted">—</div>
-        </section>
-        <section className="card">
-          <h2>Leaders (ranked)</h2>
-          <div className="muted">—</div>
-        </section>
-        <section className="card">
-          <h2>Why this matters</h2>
-          <div className="muted">—</div>
-        </section>
-        <section className="card">
-          <h2>Ahead of the curve</h2>
-          <div className="muted">—</div>
-        </section>
-      </main>
+      {/* What’s rising */}
+      <div className="panel">
+        <h2>What’s rising</h2>
+        <div className="meta">—</div>
+      </div>
+
+      {/* Leaders ranked */}
+      <div className="panel">
+        <h2>Leaders (ranked)</h2>
+        <div className="meta">—</div>
+      </div>
+
+      <div className="footer">
+        Built with ❤️ — data from YouTube, GDELT & Google Trends.
+      </div>
     </div>
   );
 }
