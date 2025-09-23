@@ -1,339 +1,261 @@
-// client/src/App.jsx
+// /client/src/App.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import './styles.css';
 
-const REGION_OPTIONS = ['Nordics', 'US', 'UK', 'EU', 'All'];
-
-function Badge({ children }) {
-  return <span className="badge">{children}</span>;
-}
-
-function Pill({ label, onRemove }) {
-  return (
-    <span className="pill">
-      {label}
-      <button className="pill-x" onClick={onRemove} aria-label={`Remove ${label}`}>×</button>
-    </span>
-  );
-}
-
-function Empty({ children = '—' }) {
-  return <div className="empty">{children}</div>;
-}
-
-function Spinner() {
-  return <div className="spinner" aria-label="loading" />;
-}
-
-function ExternalArrow() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" className="ext">
-      <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z" />
-      <path d="M5 5h7v2H7v10h10v-5h2v7H5z" />
-    </svg>
-  );
-}
-
-// -------- Helpers on the client --------
-function ytLink(sourceId, query) {
-  if (sourceId) return `https://www.youtube.com/watch?v=${sourceId}`;
-  return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
-}
-function newsLink(query) {
-  return `https://news.google.com/search?q=${encodeURIComponent(query)}`;
-}
-function trendsLink(query, region = 'US') {
-  return `https://trends.google.com/trends/explore?geo=${encodeURIComponent(region)}&q=${encodeURIComponent(query)}`;
-}
-
-function computeRising(entities, limit = 10) {
-  const rows = [];
-  for (const e of entities || []) {
-    for (const s of e.top || []) {
-      const vel = Number(s.velocity || 0);
-      const eng = Number(s.engagement || 0);
-      const auth = Number(s.authority || 0);
-      const score = Number(s.score || 0);
-
-      // If no velocity from providers, synthesize a lightweight “rise” score.
-      // Favor engagement + authority and lightly mix in score.
-      const riseScore = vel > 0 ? vel : (0.6 * eng + 0.4 * auth + 0.2 * score);
-
-      rows.push({
-        entity: e.entity,
-        provider: s.provider,
-        velocity: riseScore,           // we sort by this
-        authority: auth,
-        engagement: eng,
-        link:
-          s.provider === 'youtube'
-            ? (s.sourceId ? `https://www.youtube.com/watch?v=${s.sourceId}` : `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`)
-            : (s.provider === 'gdelt'
-                ? `https://news.google.com/search?q=${encodeURIComponent(e.entity)}`
-                : `https://trends.google.com/trends/explore?q=${encodeURIComponent(e.entity)}`),
-      });
-    }
-  }
-  rows.sort((a, b) => b.velocity - a.velocity || b.authority - a.authority);
-  return rows.slice(0, limit);
-}
-
+const number = (n, d = 0) =>
+  typeof n === 'number' && Number.isFinite(n) ? n.toFixed(d) : '—';
+const pct = (p) =>
+  typeof p === 'number' && Number.isFinite(p) ? `${Math.round(p)}%` : '—';
+const compact = (n) =>
+  typeof n === 'number' && Number.isFinite(n)
+    ? Intl.NumberFormat('en', { notation: 'compact' }).format(n)
+    : '—';
 
 export default function App() {
   const [region, setRegion] = useState('Nordics');
   const [working, setWorking] = useState(['trenchcoat', 'loafers', 'quiet luxury']);
-  const [addTerm, setAddTerm] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  // data from API
-  const [entities, setEntities] = useState([]); // [{entity, top:[...], agg:{}}]
-  const [lastTotals, setLastTotals] = useState({ signals: 0, keywords: 0 });
-
-  // Leaders + Insight
+  const [addText, setAddText] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [run, setRun] = useState(null);
   const [leaders, setLeaders] = useState([]);
-  const [leadersBusy, setLeadersBusy] = useState(false);
+  const [rising, setRising] = useState([]);
+  const [bullets, setBullets] = useState([]);
+  const [insightLoading, setInsightLoading] = useState(false);
 
-  const [insight, setInsight] = useState(null);
-  const [insightBusy, setInsightBusy] = useState(false);
+  const canRun = useMemo(() => working.length > 0 && !loading, [working, loading]);
 
-  const rising = useMemo(() => computeRising(entities, 10), [entities]);
-
-  useEffect(() => {
-    // On load, fetch the initial "top movers" block (server derived)
-    refreshTopMovers();
-    // Also show leaders for current region
-    loadLeaders(region);
-  }, [region]);
-
-  async function refreshTopMovers() {
-    try {
-      const r = await fetch(`/api/themes/top?region=${encodeURIComponent(region)}&limit=10`);
-      const j = await r.json();
-      // j = { ok, data: [{ entity, avgScore, totalViews, avgEng, avgAuth, ...}] }
-      // This endpoint is for the "quick cards", but we still drive the table from /run results,
-      // so we only use it when nothing else is present.
-    } catch {
-      // ignore; this is best-effort on load
-    }
-  }
-
-  function removeTerm(ix) {
-    const copy = working.slice();
-    copy.splice(ix, 1);
-    setWorking(copy);
-  }
-
-  function addKeyword() {
-    const v = (addTerm || '').trim();
+  const onAdd = () => {
+    const v = addText.trim();
     if (!v) return;
-    if (!working.includes(v)) setWorking([...working, v]);
-    setAddTerm('');
-  }
+    if (!working.includes(v)) setWorking((w) => [...w, v]);
+    setAddText('');
+  };
+  const onRemove = (kw) => setWorking((w) => w.filter((x) => x !== kw));
+  const resetWorking = () => setWorking([]);
 
-  async function runResearch() {
-    setBusy(true);
+  async function doRun() {
+    setLoading(true);
+    setBullets([]);
     try {
-      const r = await fetch('/api/research/run', {
+      const res = await fetch('/api/research/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ region, keywords: working }),
       });
-      const j = await r.json();
-      if (j?.ok) {
-        setEntities(j.entities || []);
-        setLastTotals({ signals: j.totalSignals || 0, keywords: (j.keywords || []).length });
-        // fetch fresh leaders (based on new signals)
-        loadLeaders(region);
-        // fetch a short insight
-        generateInsight(j.entities || []);
-      } else {
-        alert('Research request failed.');
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Research error (see console).');
-    } finally {
-      setBusy(false);
-    }
-  }
+      const data = await res.json();
+      if (!data?.ok) throw new Error('run failed');
 
-  async function loadLeaders(rgn) {
-    setLeadersBusy(true);
-    try {
-      const r = await fetch(`/api/themes/leaders?region=${encodeURIComponent(rgn)}&limit=8`);
-      const j = await r.json();
-      setLeaders(j?.data || []);
-    } catch (e) {
-      console.error(e);
-      setLeaders([]);
-    } finally {
-      setLeadersBusy(false);
-    }
-  }
+      setRun(data);
 
-  async function generateInsight(currentEntities) {
-    setInsightBusy(true);
-    try {
-      const r = await fetch('/api/briefs/insight', {
+      // Panels
+      const entities = data.entities ?? [];
+      // Leaders: rank by (authority*0.55 + engagement*0.45)
+      const rows = entities
+        .flatMap((e) =>
+          (e.top || []).map((s) => ({
+            theme: e.entity,
+            provider: s.provider || '—',
+            authority: s.authority ?? 0,
+            engagement: s.engagement ?? 0,
+            link:
+              s.provider === 'youtube'
+                ? `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`
+                : s.provider === 'gdelt'
+                ? `https://search.gdeltproject.org/?query=${encodeURIComponent(e.entity)}`
+                : `https://trends.google.com/trends/explore?q=${encodeURIComponent(e.entity)}`,
+          })),
+        )
+        .map((r) => ({
+          ...r,
+          rankScore: 0.55 * r.authority + 0.45 * r.engagement,
+        }))
+        .filter((r) => r.rankScore > 0.02)
+        .sort((a, b) => b.rankScore - a.rankScore)
+        .slice(0, 10);
+
+      setLeaders(rows);
+
+      // Rising: fallback score (engagement+authority mix) * recency decay
+      const nowTs = Date.now();
+      const risingRows = entities
+        .flatMap((e) =>
+          (e.top || []).map((s) => {
+            const t = new Date(s.observedAt || data.now || Date.now()).getTime();
+            const ageDays = Math.max(0, (nowTs - t) / (86400e3));
+            const base = 0.6 * (s.engagement ?? 0) + 0.4 * (s.authority ?? 0);
+            const decay = Math.exp(-ageDays / 7);
+            return { theme: e.entity, score: base * decay };
+          }),
+        )
+        .sort((a, b) => b.score - a.score)
+        .filter((r) => r.score > 0.02)
+        .slice(0, 5);
+      setRising(risingRows);
+
+      // Why this matters (OpenAI)
+      setInsightLoading(true);
+      const brief = await fetch('/api/briefs/insight', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ region, entities: currentEntities }),
-      });
-      const j = await r.json();
-      setInsight(j?.bullets || null);
+        body: JSON.stringify({ region, entities }),
+      }).then((r) => r.json());
+      if (brief?.ok && Array.isArray(brief.bullets)) setBullets(brief.bullets);
     } catch (e) {
       console.error(e);
-      setInsight(null);
     } finally {
-      setInsightBusy(false);
+      setInsightLoading(false);
+      setLoading(false);
     }
   }
 
   return (
     <div className="app">
-      <header className="toolbar">
-        <h1>AI Trend Dashboard</h1>
-        <div className="toolbar-cta">
+      <div className="toolbar">
+        <div className="title">AI Trend Dashboard</div>
+        <div className="toolbar-right">
           <select
             className="select"
             value={region}
             onChange={(e) => setRegion(e.target.value)}
-            aria-label="Region"
           >
-            {REGION_OPTIONS.map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
+            <option>Nordics</option>
+            <option>US</option>
+            <option>UK</option>
+            <option>All</option>
           </select>
-
-          <button className="btn primary" disabled={busy} onClick={runResearch}>
-            {busy ? 'Running…' : 'Run research'}
+          <button className="btn primary" disabled={!canRun} onClick={doRun}>
+            {loading ? 'Running…' : 'Run research'}
           </button>
-
           <div className="meta">
-            <div><b>{lastTotals.signals}</b><div className="meta-sub">Signals (last run)</div></div>
-            <div><b>{lastTotals.keywords}</b><div className="meta-sub">Keywords</div></div>
-            <div><b>{region}</b><div className="meta-sub">Region</div></div>
+            <div className="meta-item">
+              <div className="meta-num">{run?.totalSignals ?? 0}</div>
+              <div className="meta-label">Signals (last run)</div>
+            </div>
+            <div className="meta-item">
+              <div className="meta-num">{working.length}</div>
+              <div className="meta-label">Keywords</div>
+            </div>
+            <div className="meta-item">
+              <div className="meta-num">{region}</div>
+              <div className="meta-label">Region</div>
+            </div>
           </div>
         </div>
-      </header>
-
-      <section className="panel">
-        <div className="row between">
-          <div className="kw">
-            {working.map((w, i) => (
-              <Pill key={`${w}-${i}`} label={w} onRemove={() => removeTerm(i)} />
-            ))}
-          </div>
-          <div className="kw-actions">
-            <div className="form">
-              <input
-                className="input"
-                placeholder="Add keyword…"
-                value={addTerm}
-                onChange={(e) => setAddTerm(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addKeyword()}
-              />
-              <button className="btn" onClick={addKeyword}>Add</button>
-            </div>
-            <button className="btn">Reset working list</button>
-            <a className="btn" href="/api/briefs/pdf" rel="noreferrer">Download Brief (PDF)</a>
-          </div>
-        </div>
-      </section>
-
-      <div className="grid">
-        {/* Top Movers */}
-        <section className="card tall">
-          <div className="card-head">
-            <h3>Top Movers (themes)</h3>
-          </div>
-          <div className="tbl">
-            <div className="tr th">
-              <div>Theme</div><div>Heat</div><div>Momentum</div><div>Forecast (2w)</div>
-              <div>Confidence</div><div>A/W/A</div><div>Link</div>
-            </div>
-            {(entities?.length ? entities : []).map((row) => (
-              <div className="tr" key={row.entity}>
-                <div className="theme">{row.entity}</div>
-                <div>{Number(row.top?.[0]?.engagement || 0).toFixed(2)}</div>
-                <div>{Number(row.top?.[0]?.velocity || 0).toFixed(2)}</div>
-                <div>{Math.round((row.top?.[0]?.score || 0) * 100)}%</div>
-                <div>{Math.round((row.agg?.engagement || 0) * 100)}%</div>
-                <div>Aware</div>
-                <div>
-                  <a
-                    className="icon-link"
-                    href={ytLink(row.top?.[0]?.sourceId, row.entity)}
-                    target="_blank" rel="noreferrer" title="Open signals"
-                  >
-                    <ExternalArrow />
-                  </a>
-                </div>
-              </div>
-            ))}
-            {!entities?.length && <Empty />}
-          </div>
-        </section>
-
-        {/* Leaders (ranked) */}
-        <section className="card">
-          <div className="card-head">
-            <h3>Leaders (ranked)</h3>
-            {leadersBusy && <Spinner />}
-          </div>
-          <div className="tbl">
-            <div className="tr th"><div>Source</div><div>Provider</div><div>Authority</div><div>Avg Eng</div></div>
-            {leaders?.length ? leaders.map((l, i) => (
-              <div className="tr" key={`${l.key}-${i}`}>
-                <div className="theme">{l.source}</div>
-                <div>{l.provider}</div>
-                <div>{(l.authority * 100).toFixed(0)}%</div>
-                <div>{(l.avgEng * 100).toFixed(0)}%</div>
-              </div>
-            )) : <Empty />}
-          </div>
-        </section>
-
-        {/* What's rising */}
-        <section className="card">
-          <div className="card-head">
-            <h3>What’s rising</h3>
-          </div>
-          <div className="tbl">
-            <div className="tr th"><div>Theme</div><div>Velocity</div><div>Authority</div><div>Link</div></div>
-            {rising?.length ? rising.map((r, i) => (
-              <div className="tr" key={`${r.entity}-${i}`}>
-                <div className="theme">{r.entity}</div>
-                <div>{(r.velocity * 100).toFixed(0)}%</div>
-                <div>{(r.authority * 100).toFixed(0)}%</div>
-                <div>
-                  <a className="icon-link" href={r.link} target="_blank" rel="noreferrer" title="Open">
-                    <ExternalArrow />
-                  </a>
-                </div>
-              </div>
-            )) : <Empty />}
-          </div>
-        </section>
-
-        {/* Why this matters */}
-        <section className="card">
-          <div className="card-head">
-            <h3>Why this matters</h3>
-            {insightBusy && <Spinner />}
-          </div>
-          {insight?.length ? (
-            <ul className="bullets">
-              {insight.map((b, i) => <li key={i}>{b}</li>)}
-            </ul>
-          ) : <Empty />}
-        </section>
       </div>
 
-      <footer className="footer">
-        Built with <span className="heart">♥</span> — data from YouTube, GDELT & Google Trends.
-      </footer>
+      <div className="panel">
+        <div className="pill-row">
+          {working.map((kw) => (
+            <span key={kw} className="pill">
+              {kw}
+              <button className="pill-x" onClick={() => onRemove(kw)}>×</button>
+            </span>
+          ))}
+        </div>
+        <div className="kw-row">
+          <input
+            className="input"
+            placeholder="Add keyword…"
+            value={addText}
+            onChange={(e) => setAddText(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && onAdd()}
+          />
+          <button className="btn" onClick={onAdd}>Add</button>
+          <button className="btn ghost" onClick={resetWorking}>Reset working list</button>
+          <a className="btn ghost" href="/api/briefs/pdf" target="_blank" rel="noreferrer">
+            Download Brief (PDF)
+          </a>
+        </div>
+      </div>
+
+      <div className="grid">
+        <div className="card">
+          <div className="card-title">Top Movers (themes)</div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th className="tl">Theme</th>
+                <th className="tr">Heat</th>
+                <th className="tr">Momentum</th>
+                <th className="tr">Forecast (2w)</th>
+                <th className="tr">Confidence</th>
+                <th className="tr">A/W/A</th>
+                <th className="tr">Link</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(run?.entities ?? []).map((e) => {
+                // demo numbers based on agg to keep table filled
+                const heat = Math.min(1, (e.agg?.engagement ?? 0) * 0.8 + (e.agg?.authority ?? 0) * 0.2);
+                const forecast = Math.round((0.3 + heat * 0.3) * 100);
+                const conf = Math.round((e.agg?.authority ?? 0) * 100);
+                const link = `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`;
+                return (
+                  <tr key={e.entity}>
+                    <td className="tl">{e.entity}</td>
+                    <td className="tr">{number(heat, 2)}</td>
+                    <td className="tr">{number(0, 2)}</td>
+                    <td className="tr">{pct(forecast)}</td>
+                    <td className="tr">{pct(conf)}</td>
+                    <td className="tr">Aware</td>
+                    <td className="tr">
+                      <a className="icon-link" href={link} target="_blank" rel="noreferrer">↗</a>
+                    </td>
+                  </tr>
+                );
+              })}
+              {(!run || (run?.entities ?? []).length === 0) && (
+                <tr><td colSpan={7} className="td-empty">—</td></tr>
+              )}
+            </tbody>
+          </table>
+          {run?.now && <div className="card-foot">Last run: {new Date(run.now).toLocaleString()}</div>}
+        </div>
+
+        <div className="card">
+          <div className="card-title">Leaders (ranked)</div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th className="tl">Theme</th>
+                <th className="tl">Provider</th>
+                <th className="tr">Authority</th>
+                <th className="tr">Avg Eng</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaders.map((r, i) => (
+                <tr key={`${r.theme}-${i}`}>
+                  <td className="tl">{r.theme}</td>
+                  <td className="tl"><span className={`badge ${r.provider}`}>{r.provider}</span></td>
+                  <td className="tr">{pct(Math.round((r.authority ?? 0) * 100))}</td>
+                  <td className="tr">{pct(Math.round((r.engagement ?? 0) * 100))}</td>
+                </tr>
+              ))}
+              {leaders.length === 0 && <tr><td colSpan={4} className="td-empty">—</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <div className="card-title">What’s rising</div>
+          <ul className="list">
+            {rising.map((r, i) => (
+              <li key={`${r.theme}-${i}`}>{r.theme}</li>
+            ))}
+            {rising.length === 0 && <li className="td-empty">—</li>}
+          </ul>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Why this matters</div>
+          <div className="bullets">
+            {insightLoading && <div className="skeleton lines-3" />}
+            {!insightLoading && bullets.map((b, i) => <div key={i} className="bullet">• {b}</div>)}
+            {!insightLoading && bullets.length === 0 && <div className="td-empty">—</div>}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
-

@@ -1,88 +1,110 @@
-// api/research/run.js
+// /api/research/run.js
 import { prisma } from '../../lib/db.js';
 import { fetchYouTubeSignals } from '../../lib/providers/youtube.js';
 import { fetchGdeltSignals } from '../../lib/providers/gdelt.js';
 import { fetchTrendsSignals } from '../../lib/providers/trends.js';
-
-import { callProvider } from '../../lib/guard.js';
-import { normalizeProviderArray, NormalizedSignal } from '../../lib/schemas.js';
-import { scoreOne, summarizeEntity } from '../../lib/scorer.js';
+import { RunResearchSchema } from '../../lib/validation.js';
+import { safe } from '../../lib/http.js';
 
 export const config = { runtime: 'nodejs' };
 
-function cleanKeywords(input) {
-  if (!input) return [];
-  if (Array.isArray(input)) return input.map(String);
-  if (typeof input === 'string') return input.split(',').map(s => s.trim());
-  return [];
+// Score (stable, simple)
+function scoreOne(s) {
+  const viewsTerm = Math.log10((s.views ?? 0) + 1);
+  const engage = Number(s.engagement ?? 0);
+  const auth = Number(s.authority ?? 0);
+  const vel = Number(s.velocity ?? 0);
+  const news = Number(s.newsRank ?? 0);
+  return Number((0.4 * engage + 0.25 * auth + 0.15 * vel + 0.1 * news + 0.1 * viewsTerm).toFixed(4));
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  const started = Date.now();
-  const body = req.body || {};
-  const region = (body.region || 'All').trim();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    // 1) Resolve working keywords (prefer request; else server watchlist; else defaults)
-    let keywords = cleanKeywords(body.keywords);
-    if (!keywords.length) {
-      try {
-        const wl = await prisma.watchlist.findUnique({ where: { region } });
-        if (Array.isArray(wl?.keywords) && wl.keywords.length) {
-          keywords = wl.keywords;
-        }
-      } catch { /* swallow */ }
+    const parsed = RunResearchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
     }
-    if (!keywords.length) keywords = ['trenchcoat', 'loafers', 'quiet luxury'];
-    keywords = keywords.map(s => String(s).trim()).filter(Boolean).slice(0, 8);
+    const { region, keywords: inKw } = parsed.data;
 
-    // 2) Pull from all providers with guard (timeout/retry/breaker). Never throws.
+    // Load watchlist if no keywords provided
+    let keywords = Array.isArray(inKw) && inKw.length ? inKw : [];
+    if (!keywords.length) {
+      const wl = await prisma.watchlist.findUnique({ where: { region } }).catch(() => null);
+      keywords = Array.isArray(wl?.keywords) && wl.keywords.length ? wl.keywords : ['trenchcoat', 'loafers', 'quiet luxury'];
+    }
+    keywords = keywords.map(s => s.trim()).filter(Boolean).slice(0, 8);
+
     const collected = [];
+    const now = new Date();
+
     for (const kw of keywords) {
-      const results = await Promise.all([
-        callProvider('youtube', () => fetchYouTubeSignals({ apiKey: process.env.YOUTUBE_API_KEY, query: kw })),
-        callProvider('gdelt',   () => fetchGdeltSignals({ query: kw })),
-        callProvider('trends',  () => fetchTrendsSignals({ query: kw })),
+      const [yt, news, tr] = await Promise.all([
+        safe(fetchYouTubeSignals({ apiKey: process.env.YOUTUBE_API_KEY, query: kw }, { timeoutMs: 6000, retries: 1 }), []),
+        safe(fetchGdeltSignals({ query: kw }, { timeoutMs: 6000, retries: 1 }), []),
+        safe(fetchTrendsSignals({ query: kw }, { timeoutMs: 6000, retries: 0 }), []),
       ]);
 
-      // 3) Validate/normalize each provider’s payload (drop bad rows quietly)
-      const yt   = results[0].ok ? normalizeProviderArray(results[0].data, 'youtube') : [];
-      const news = results[1].ok ? normalizeProviderArray(results[1].data, 'gdelt')   : [];
-      const tr   = results[2].ok ? normalizeProviderArray(results[2].data, 'trends')  : [];
+      const norm = (arr, provider) =>
+        (arr || []).map((s) => ({
+          region,
+          entity: kw,
+          entityType: 'theme',
+          provider: s.provider || provider,
+          sourceId: s.sourceId ?? null,
+          views: s.views ?? 0,
+          likes: s.likes ?? 0,
+          comments: s.comments ?? 0,
+          shares: s.shares ?? 0,
+          searchVol: s.searchVol ?? 0,
+          newsRank: s.newsRank ?? 0,
+          engagement: s.engagement ?? 0,
+          velocity: s.velocity ?? 0,
+          authority: s.authority ?? 0,
+          observedAt: s.observedAt ? new Date(s.observedAt) : now,
+        }));
 
-      const all = [...yt, ...news, ...tr].map(s => ({
-        region,
-        entity: kw,
-        entityType: 'theme',
-        ...s,
-      }));
-
-      // score + final schema validation (keeps the DB clean)
-      for (const row of all) {
-        row.score = scoreOne(row);
-        const parsed = NormalizedSignal.safeParse(row);
-        if (parsed.success) collected.push(parsed.data);
-      }
+      collected.push(...norm(yt, 'youtube'), ...norm(news, 'gdelt'), ...norm(tr, 'trends'));
     }
 
-    // 4) Best-effort persist (never allow a single row to crash the whole request)
-    try {
-      await prisma.$transaction(
-        collected.map(s =>
-          prisma.signal.create({ data: s }).catch(() => null)
-        ),
-        { timeout: 15_000 }
-      ).catch(() => null);
-    } catch { /* swallow */ }
+    // Filter obvious junk
+    const filtered = collected.filter(
+      s => (s.views + s.likes + s.comments + s.shares > 0) || s.searchVol > 0 || s.newsRank > 0 || s.engagement > 0 || s.authority > 0,
+    );
 
-    // 5) Summarize for UI
+    const scored = filtered.map((s) => ({ ...s, score: scoreOne(s) }));
+
+    // Best-effort persist
+    await prisma.$transaction(
+      scored.map((s) =>
+        prisma.signal.create({
+          data: {
+            region: s.region,
+            entity: s.entity,
+            entityType: s.entityType,
+            provider: s.provider,
+            sourceId: s.sourceId,
+            views: s.views,
+            likes: s.likes,
+            comments: s.comments,
+            shares: s.shares,
+            searchVol: s.searchVol,
+            newsRank: s.newsRank,
+            engagement: s.engagement,
+            velocity: s.velocity,
+            authority: s.authority,
+            score: s.score,
+            observedAt: s.observedAt,
+          },
+        }).catch(() => null),
+      ),
+      { timeout: 15000 },
+    ).catch(() => null);
+
+    // Summarize for UI
     const byEntity = new Map();
-    for (const s of collected) {
+    for (const s of scored) {
       const list = byEntity.get(s.entity) || [];
       list.push(s);
       byEntity.set(s.entity, list);
@@ -90,37 +112,24 @@ export default async function handler(req, res) {
 
     const entities = Array.from(byEntity.entries()).map(([entity, arr]) => {
       const top = [...arr].sort((a, b) => b.score - a.score).slice(0, 5);
-      const agg = summarizeEntity(top);
-      const views = top.reduce((n, x) => n + (x.views || 0), 0);
-      return {
-        entity,
-        top,
-        agg: { ...agg, totalViews: views }
+      const agg = {
+        views: top.reduce((n, x) => n + (x.views || 0), 0),
+        engagement: Number((top.reduce((n, x) => n + (x.engagement || 0), 0) / Math.max(top.length, 1)).toFixed(4)),
+        authority: Number((top.reduce((n, x) => n + (x.authority || 0), 0) / Math.max(top.length, 1)).toFixed(4)),
       };
+      return { entity, top, agg };
     });
 
-    // Sort by heat (your UI reads this naturally)
-    entities.sort((a, b) => (b.agg.heat || 0) - (a.agg.heat || 0));
-
-    const tookMs = Date.now() - started;
-    return res.status(200).json({
+    res.status(200).json({
       ok: true,
       region,
       keywords,
-      totalSignals: collected.length,
+      totalSignals: scored.length,
       entities,
-      meta: { tookMs }
+      now: new Date().toISOString(),
     });
   } catch (err) {
-    // Final safety net. We should rarely land here because guards swallow provider errors.
-    console.error('[research/run] fatal', err);
-    return res.status(200).json({
-      ok: false,
-      region,
-      keywords: [],
-      totalSignals: 0,
-      entities: [],
-      meta: { error: 'fatal', detail: String(err?.message || err) }
-    });
+    console.error('[research/run] error', err);
+    res.status(500).json({ error: 'Internal error' });
   }
 }
