@@ -1,52 +1,75 @@
-// /api/research/run.js
+// api/research/run.js
 import { prisma } from '../../lib/db.js';
 import { fetchYouTubeSignals } from '../../lib/providers/youtube.js';
 import { fetchGdeltSignals } from '../../lib/providers/gdelt.js';
 import { fetchTrendsSignals } from '../../lib/providers/trends.js';
-import { RunResearchSchema } from '../../lib/validation.js';
-import { safe } from '../../lib/http.js';
 
+// Ensure Node runtime on Vercel
 export const config = { runtime: 'nodejs' };
 
-// Score (stable, simple)
+// --- tiny helper: safe wrapper so one bad provider doesn't 500 the route ---
+const safe = async (promise, fallback = []) => {
+  try {
+    const v = await promise;
+    return Array.isArray(v) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+// --- tiny helper: simple, transparent scoring (kept local to avoid deps mismatch) ---
 function scoreOne(s) {
   const viewsTerm = Math.log10((s.views ?? 0) + 1);
-  const engage = Number(s.engagement ?? 0);
-  const auth = Number(s.authority ?? 0);
-  const vel = Number(s.velocity ?? 0);
-  const news = Number(s.newsRank ?? 0);
-  return Number((0.4 * engage + 0.25 * auth + 0.15 * vel + 0.1 * news + 0.1 * viewsTerm).toFixed(4));
+  const engage    = Number(s.engagement ?? 0);
+  const auth      = Number(s.authority ?? 0);
+  const vel       = Number(s.velocity ?? 0);
+  const newsRank  = Number(s.newsRank ?? 0);
+
+  const score =
+    0.40 * engage +
+    0.25 * auth +
+    0.15 * vel +
+    0.10 * newsRank +
+    0.10 * viewsTerm;
+
+  return Number(score.toFixed(4));
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
   try {
-    const parsed = RunResearchSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
-    }
-    const { region, keywords: inKw } = parsed.data;
+    const body = req.body || {};
+    const region = (body.region || 'All').trim();
 
-    // Load watchlist if no keywords provided
-    let keywords = Array.isArray(inKw) && inKw.length ? inKw : [];
+    // Prefer caller keywords; otherwise fetch saved watchlist for region
+    let keywords = Array.isArray(body.keywords)
+      ? body.keywords
+      : (typeof body.keywords === 'string' ? body.keywords.split(',') : []);
+
     if (!keywords.length) {
       const wl = await prisma.watchlist.findUnique({ where: { region } }).catch(() => null);
-      keywords = Array.isArray(wl?.keywords) && wl.keywords.length ? wl.keywords : ['trenchcoat', 'loafers', 'quiet luxury'];
+      keywords = Array.isArray(wl?.keywords) && wl.keywords.length
+        ? wl.keywords
+        : ['trenchcoat', 'loafers', 'quiet luxury'];
     }
-    keywords = keywords.map(s => s.trim()).filter(Boolean).slice(0, 8);
 
+    keywords = keywords.map(s => String(s).trim()).filter(Boolean).slice(0, 8);
+
+    // Collect signals per keyword from all providers (fail-soft)
     const collected = [];
-    const now = new Date();
-
     for (const kw of keywords) {
       const [yt, news, tr] = await Promise.all([
-        safe(fetchYouTubeSignals({ apiKey: process.env.YOUTUBE_API_KEY, query: kw }, { timeoutMs: 6000, retries: 1 }), []),
-        safe(fetchGdeltSignals({ query: kw }, { timeoutMs: 6000, retries: 1 }), []),
-        safe(fetchTrendsSignals({ query: kw }, { timeoutMs: 6000, retries: 0 }), []),
+        safe(fetchYouTubeSignals({ apiKey: process.env.YOUTUBE_API_KEY, query: kw })),
+        safe(fetchGdeltSignals({ query: kw })),
+        safe(fetchTrendsSignals({ query: kw })),
       ]);
 
-      const norm = (arr, provider) =>
+      const now = new Date();
+      const mark = (arr, provider) =>
         (arr || []).map((s) => ({
           region,
           entity: kw,
@@ -65,42 +88,48 @@ export default async function handler(req, res) {
           observedAt: s.observedAt ? new Date(s.observedAt) : now,
         }));
 
-      collected.push(...norm(yt, 'youtube'), ...norm(news, 'gdelt'), ...norm(tr, 'trends'));
+      collected.push(...mark(yt, 'youtube'), ...mark(news, 'gdelt'), ...mark(tr, 'trends'));
     }
 
-    // Filter obvious junk
-    const filtered = collected.filter(
-      s => (s.views + s.likes + s.comments + s.shares > 0) || s.searchVol > 0 || s.newsRank > 0 || s.engagement > 0 || s.authority > 0,
-    );
+    // Score rows
+    const scored = collected.map((s) => ({ ...s, score: scoreOne(s) }));
 
-    const scored = filtered.map((s) => ({ ...s, score: scoreOne(s) }));
+    // ---- PERSISTENCE (fixed) -------------------------------------------------
+    // Try a bulk insert first (fast). If it fails (e.g., schema mismatch), fall back
+    // to best-effort per-row inserts without using $transaction + .catch in array.
+    const payload = scored.map((s) => ({
+      region: s.region,
+      entity: s.entity,
+      entityType: s.entityType,
+      provider: s.provider,
+      sourceId: s.sourceId,
+      views: s.views,
+      likes: s.likes,
+      comments: s.comments,
+      shares: s.shares,
+      searchVol: s.searchVol,
+      newsRank: s.newsRank,
+      engagement: s.engagement,
+      velocity: s.velocity,
+      authority: s.authority,
+      score: s.score,
+      observedAt: s.observedAt,
+    }));
 
-    // Best-effort persist
-    await prisma.$transaction(
-      scored.map((s) =>
-        prisma.signal.create({
-          data: {
-            region: s.region,
-            entity: s.entity,
-            entityType: s.entityType,
-            provider: s.provider,
-            sourceId: s.sourceId,
-            views: s.views,
-            likes: s.likes,
-            comments: s.comments,
-            shares: s.shares,
-            searchVol: s.searchVol,
-            newsRank: s.newsRank,
-            engagement: s.engagement,
-            velocity: s.velocity,
-            authority: s.authority,
-            score: s.score,
-            observedAt: s.observedAt,
-          },
-        }).catch(() => null),
-      ),
-      { timeout: 15000 },
-    ).catch(() => null);
+    try {
+      if (payload.length) {
+        await prisma.signal.createMany({
+          data: payload,
+          skipDuplicates: true, // requires a unique constraint if you rely on this
+        });
+      }
+    } catch (e) {
+      // Fallback: best-effort, don't block the request if some rows fail
+      await Promise.allSettled(
+        payload.map((row) => prisma.signal.create({ data: row }))
+      );
+    }
+    // --------------------------------------------------------------------------
 
     // Summarize for UI
     const byEntity = new Map();
@@ -110,26 +139,29 @@ export default async function handler(req, res) {
       byEntity.set(s.entity, list);
     }
 
-    const entities = Array.from(byEntity.entries()).map(([entity, arr]) => {
+    const summary = Array.from(byEntity.entries()).map(([entity, arr]) => {
       const top = [...arr].sort((a, b) => b.score - a.score).slice(0, 5);
       const agg = {
         views: top.reduce((n, x) => n + (x.views || 0), 0),
-        engagement: Number((top.reduce((n, x) => n + (x.engagement || 0), 0) / Math.max(top.length, 1)).toFixed(4)),
-        authority: Number((top.reduce((n, x) => n + (x.authority || 0), 0) / Math.max(top.length, 1)).toFixed(4)),
+        engagement: Number(
+          (top.reduce((n, x) => n + (x.engagement || 0), 0) / Math.max(top.length, 1)).toFixed(4)
+        ),
+        authority: Number(
+          (top.reduce((n, x) => n + (x.authority || 0), 0) / Math.max(top.length, 1)).toFixed(4)
+        ),
       };
       return { entity, top, agg };
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
       region,
       keywords,
       totalSignals: scored.length,
-      entities,
-      now: new Date().toISOString(),
+      entities: summary,
     });
   } catch (err) {
     console.error('[research/run] error', err);
-    res.status(500).json({ error: 'Internal error' });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }
