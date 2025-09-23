@@ -129,4 +129,21 @@ function clampInt(v, min, max) { const n = parseInt(String(v), 10); return Numbe
 function push(map, key, val) { const arr = map.get(key) || []; arr.push(val); map.set(key, arr); }
 function num(v) { return Number(v || 0); }
 function round4(v) { return Math.round(num(v) * 1e4) / 1e4; }
-function
+function safeNumber(v) { const n = num(v); return Number.isFinite(n) ? n : 0; }
+function softClamp(v) { return Math.max(0, Math.min(1, num(v))); }
+function clampUnit(v) { return Math.max(-1, Math.min(1, num(v))); }
+function toPct(v) { return Math.round(softClamp(v) * 100); }
+function aggregate(arr) {
+  const n = arr.length || 1;
+  const sumScore = arr.reduce((s, x) => s + num(x.score), 0);
+  const sumViews = arr.reduce((s, x) => s + num(x.views), 0);
+  const sumEng = arr.reduce((s, x) => s + num(x.engagement), 0);
+  const sumAuth = arr.reduce((s, x) => s + num(x.authority), 0);
+  return {
+    count: arr.length,
+    avgScore: sumScore / n,
+    totalViews: sumViews,
+    avgEng: sumEng / n,
+    avgAuth: sumAuth / n,
+  };
+}
