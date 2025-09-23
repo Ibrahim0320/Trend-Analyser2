@@ -1,269 +1,276 @@
-/* client/src/styles.css
-   — Sleek dark theme with glass cards & tasteful motion
-   — No markup changes required
-*/
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/* ---------- CSS Reset (lightweight) ---------- */
-*,
-*::before,
-*::after { box-sizing: border-box; }
-html, body { height: 100%; }
-body, h1, h2, h3, p, ul, ol { margin: 0; }
-img { max-width: 100%; display: block; }
-button, input, select { font: inherit; }
+/**
+ * Polished UI that keeps your existing endpoints and flows:
+ * - POST /api/research/run  (body: { region, keywords[]? })
+ * - GET  /api/themes/top?region=...&limit=10
+ * - GET/POST /api/research/watchlist
+ * - GET  /api/briefs/pdf?region=...&k=keyword1&k=keyword2...
+ */
 
-/* ---------- Theme Tokens ---------- */
-:root{
-  --bg: #0c1117;            /* page background */
-  --panel: #0f1623;         /* card base */
-  --glass: rgba(255,255,255,0.04);
-  --border: rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.16);
-  --text: #e8eef8;
-  --muted: #9fb0c3;
-  --accent: #7aa2ff;
-  --accent-2: #6ee7b7;
-  --danger: #ff6b6b;
-  --warn: #ffd166;
-  --good: #34d399;
+const REGIONS = ["Nordics", "US", "UK", "DACH", "Benelux", "All"];
 
-  --shadow-1: 0 6px 18px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02);
-  --radius: 18px;
+export default function App() {
+  // ------- UI state -------
+  const [region, setRegion] = useState("Nordics");
+  const [input, setInput] = useState("");
+  const [chips, setChips] = useState(["trenchcoat", "loafers", "quiet luxury"]);
+  const [loadingRun, setLoadingRun] = useState(false);
+  const [loadingTop, setLoadingTop] = useState(false);
 
-  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  --sans: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
-}
+  // server data
+  const [top, setTop] = useState([]); // [{ theme, heat, momentum, forecast, confidence, awa, link }]
+  const [lastRunMeta, setLastRunMeta] = useState(null); // {totalSignals, entities: [...]}
 
-@media (prefers-color-scheme: light){
-  :root{
-    --bg: #f6f8fb;
-    --panel: #ffffff;
-    --glass: rgba(20,20,20,0.02);
-    --border: rgba(0,0,0,0.08);
-    --border-strong: rgba(0,0,0,0.12);
-    --text: #101623;
-    --muted: #55627a;
-  }
-}
+  const inputRef = useRef(null);
 
-/* ---------- Page ---------- */
-body{
-  background: radial-gradient(1200px 700px at 20% -10%, #192133 0%, transparent 60%),
-              radial-gradient(900px 600px at 100% 0%, #1b283f 0%, transparent 50%),
-              var(--bg);
-  color: var(--text);
-  font-family: var(--sans);
-  line-height: 1.45;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+  // -------- helpers ----------
+  const addChip = () => {
+    const v = input.trim();
+    if (!v) return;
+    if (!chips.includes(v)) setChips((c) => [...c, v]);
+    setInput("");
+    inputRef.current?.focus();
+  };
+  const removeChip = (v) => setChips((c) => c.filter((x) => x !== v));
 
-.app{
-  max-width: 1120px;
-  margin: 32px auto 80px;
-  padding: 0 20px;
-}
+  // -------- API calls ----------
+  const fetchTop = async (r = region) => {
+    setLoadingTop(true);
+    try {
+      const res = await fetch(`/api/themes/top?region=${encodeURIComponent(r)}&limit=10`);
+      const js = await res.json();
+      // Expecting {ok, data:[{entity, avgScore, totalViews, avgEng, avgAuth, heat, momentum, forecast, confidence, awa, link}]}
+      setTop(js?.data ?? []);
+    } catch (err) {
+      console.error("top failed", err);
+      setTop([]);
+    } finally {
+      setLoadingTop(false);
+    }
+  };
 
-/* ---------- Header ---------- */
-h1{
-  font-size: clamp(26px, 2.6vw, 34px);
-  letter-spacing: -0.02em;
-  font-weight: 700;
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-h1::after{
-  content:"";
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, var(--border-strong), transparent);
-  margin-left: 8px;
-  opacity: .6;
-}
+  const runResearch = async () => {
+    setLoadingRun(true);
+    try {
+      const res = await fetch("/api/research/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ region, keywords: chips }),
+      });
+      const js = await res.json();
+      setLastRunMeta({
+        totalSignals: js?.totalSignals ?? 0,
+        entities: js?.entities ?? [],
+      });
+      // Refresh the top movers once run completes
+      await fetchTop(region);
+      // Save watchlist silently
+      await saveWatchlistSilent();
+    } catch (err) {
+      console.error("run failed", err);
+    } finally {
+      setLoadingRun(false);
+    }
+  };
 
-/* region + keyword controls row */
-.toolbar{
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
-}
+  const saveWatchlistSilent = async () => {
+    try {
+      await fetch("/api/research/watchlist", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ region, keywords: chips }),
+      });
+    } catch {}
+  };
 
-/* ---------- Controls ---------- */
-select, input[type="text"]{
-  background: linear-gradient(180deg, var(--glass), transparent);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 10px 12px;
-  border-radius: 10px;
-  outline: none;
-  transition: border .18s ease, box-shadow .18s ease, transform .06s ease;
-}
-select:focus, input[type="text"]:focus{
-  border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(122,162,255,.16);
-}
+  const loadWatchlist = async () => {
+    try {
+      const res = await fetch(`/api/research/watchlist?region=${encodeURIComponent(region)}`);
+      const js = await res.json();
+      if (Array.isArray(js?.keywords) && js.keywords.length) setChips(js.keywords);
+    } catch {}
+  };
 
-.btn{
-  background: linear-gradient(180deg, rgba(122,162,255,.18), rgba(122,162,255,.05));
-  color: white;
-  border: 1px solid rgba(122,162,255,.4);
-  padding: 10px 14px;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: transform .06s ease, filter .18s ease, box-shadow .2s ease;
-  box-shadow: var(--shadow-1);
-}
-.btn:hover{ filter: brightness(1.08); }
-.btn:active{ transform: translateY(1px) scale(.99); }
+  // initial + region change
+  useEffect(() => {
+    fetchTop(region);
+    loadWatchlist();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [region]);
 
-.btn.secondary{
-  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
-  border-color: var(--border-strong);
-  color: var(--text);
-}
+  // derived: nice rows for the top table
+  const rows = useMemo(
+    () =>
+      (top || []).map((t) => ({
+        theme: t.theme || t.entity,
+        heat: Math.round((t.heat ?? 0)),
+        momentum: Math.round((t.momentum ?? 0)),
+        forecast: Math.round((t.forecast ?? 0) * 100),
+        confidence: `${Math.round((t.confidence ?? 0) * 100)}%`,
+        awa: t.awa ?? "Aware",
+        link:
+          t.link ||
+          (t.entity
+            ? `https://www.youtube.com/results?search_query=${encodeURIComponent(
+                t.entity
+              )}`
+            : "#"),
+      })),
+    [top]
+  );
 
-/* keyword chips */
-.chips{ display:flex; gap:8px; flex-wrap:wrap; }
-.chip{
-  background: linear-gradient(180deg, var(--glass), transparent);
-  border: 1px solid var(--border);
-  padding: 6px 10px;
-  border-radius: 999px;
-  color: var(--text);
-  font-size: 13px;
-  display: inline-flex; align-items:center; gap:8px;
-}
-.chip .x{
-  opacity: .7; cursor:pointer; user-select:none; font-weight:700;
-}
-.chip .x:hover{ opacity: 1; }
+  const pdfHref = useMemo(() => {
+    const qs = new URLSearchParams();
+    qs.set("region", region);
+    chips.forEach((k) => qs.append("k", k));
+    return `/api/briefs/pdf?${qs.toString()}`;
+  }, [region, chips]);
 
-/* ---------- Layout: cards grid ---------- */
-.grid{
-  display: grid;
-  gap: 14px;
-}
-@media (min-width: 900px){
-  .grid{
-    grid-template-columns: 1.35fr 1fr;
-    align-items: start;
-  }
-}
+  return (
+    <div className="container">
+      <div className="header">
+        <div className="brand">
+          <div className="logo" />
+          <h1>AI Trend Dashboard</h1>
+        </div>
+        <div className="controls">
+          <select
+            className="select"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            aria-label="Region"
+          >
+            {REGIONS.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
 
-/* ---------- Card ---------- */
-.card{
-  background: linear-gradient(180deg, var(--glass), transparent);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-1);
-  overflow: hidden;
-}
-.card + .card{ margin-top: 14px; }
+          <button
+            className="btn primary"
+            onClick={runResearch}
+            disabled={loadingRun}
+            title="Aggregate YouTube + News + Trends for your keywords"
+          >
+            {loadingRun ? "Running…" : "Run research"}
+          </button>
+        </div>
+      </div>
 
-.card__head{
-  display:flex; align-items:center; justify-content:space-between;
-  padding: 14px 16px 8px;
-  border-bottom: 1px dashed var(--border);
-}
-.card__title{
-  font-size: 16px; font-weight: 700; letter-spacing: .2px;
-}
-.card__body{ padding: 16px; }
+      {/* Working keywords */}
+      <div className="panel">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div className="meta">Working keywords:</div>
+          <div className="chips">
+            {chips.map((c) => (
+              <span key={c} className="chip">
+                {c}
+                <button onClick={() => removeChip(c)} aria-label={`remove ${c}`}>
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
 
-/* subtle appear */
-@keyframes fadeUp {
-  from{ opacity: 0; transform: translateY(6px); }
-  to{ opacity: 1; transform: translateY(0); }
-}
-.card{ animation: fadeUp .28s ease both; }
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <input
+            ref={inputRef}
+            className="input"
+            placeholder="Add keyword…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addChip()}
+          />
+          <button className="btn ghost" onClick={addChip}>Add</button>
+          <button className="btn ghost" onClick={() => setChips([])}>Reset working list</button>
+          <a className="btn ghost" href={pdfHref} target="_blank" rel="noreferrer">
+            Download Brief (PDF)
+          </a>
+        </div>
 
-/* ---------- Tables ---------- */
-.table-wrap{ width:100%; overflow:auto; }
-.tbl{
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-.tbl thead th{
-  text-align: left;
-  font-weight: 700;
-  color: var(--muted);
-  padding: 10px 12px;
-  position: sticky;
-  top: 0;
-  background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0));
-  border-bottom: 1px solid var(--border-strong);
-  backdrop-filter: blur(4px);
-}
-.tbl tbody td{
-  padding: 12px;
-  border-bottom: 1px dashed var(--border);
-  vertical-align: middle;
-}
-.tbl tbody tr:last-child td{ border-bottom: none; }
+        {lastRunMeta ? (
+          <div style={{ marginTop: 10 }} className="meta">
+            Last run: <b className="k">{lastRunMeta.totalSignals}</b> signals across{" "}
+            <b className="k">{lastRunMeta.entities?.length ?? 0}</b> themes.
+          </div>
+        ) : null}
+      </div>
 
-.tbl tbody tr{
-  transition: background .18s ease, transform .06s ease;
-}
-.tbl tbody tr:hover{
-  background: rgba(122,162,255,.06);
-}
-.tbl .mono{ font-family: var(--mono); }
+      {/* Top Movers */}
+      <div className="panel">
+        <h2>Top Movers (themes)</h2>
+        <div style={{ overflowX: "auto" }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ minWidth: 160 }}>Theme</th>
+                <th>Heat</th>
+                <th>Momentum</th>
+                <th>Forecast (2w)</th>
+                <th>Confidence</th>
+                <th>A/W/A</th>
+                <th>Link</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loadingTop
+                ? Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={`skel-${i}`}>
+                      <td><div className="skel" style={{ width: 140 }} /></td>
+                      <td><div className="skel" style={{ width: 40 }} /></td>
+                      <td><div className="skel" style={{ width: 40 }} /></td>
+                      <td><div className="skel" style={{ width: 60 }} /></td>
+                      <td><div className="skel" style={{ width: 60 }} /></td>
+                      <td><div className="skel" style={{ width: 60 }} /></td>
+                      <td><div className="skel" style={{ width: 80 }} /></td>
+                    </tr>
+                  ))
+                : rows.length === 0
+                ? (
+                  <tr>
+                    <td colSpan={7} className="meta">
+                      — No data yet. Run research to populate insights.
+                    </td>
+                  </tr>
+                )
+                : rows.map((r) => (
+                    <tr key={r.theme}>
+                      <td>{r.theme}</td>
+                      <td>{r.heat}</td>
+                      <td>{r.momentum}</td>
+                      <td>{r.forecast}%</td>
+                      <td>{r.confidence}</td>
+                      <td>{r.awa}</td>
+                      <td>
+                        <a className="link" href={r.link} target="_blank" rel="noreferrer">
+                          ↗
+                        </a>
+                      </td>
+                    </tr>
+                  ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-/* Link glyph */
-a.link{
-  color: var(--accent);
-  text-decoration: none;
-  border-bottom: 1px dashed rgba(122,162,255,.35);
-}
-a.link:hover{ filter: brightness(1.15); }
+      {/* What’s rising */}
+      <div className="panel">
+        <h2>What’s rising</h2>
+        <div className="meta">—</div>
+      </div>
 
-/* ---------- Badges & arrows ---------- */
-.badge{
-  display:inline-flex; align-items:center; gap:8px;
-  border:1px solid var(--border);
-  padding: 6px 10px; border-radius: 999px;
-  background: linear-gradient(180deg, var(--glass), transparent);
-  color: var(--text);
-  font-size: 12px;
-}
-.arrow{ display:inline-block; width:0; height:0; border:6px solid transparent; }
-.arrow.up{ border-bottom-color: var(--good); transform: translateY(-2px); }
-.arrow.down{ border-top-color: var(--danger); transform: translateY(2px); }
-.arrow.flat{
-  width: 10px; height: 2px; background: var(--muted); border: 0; display:inline-block;
-}
+      {/* Leaders ranked */}
+      <div className="panel">
+        <h2>Leaders (ranked)</h2>
+        <div className="meta">—</div>
+      </div>
 
-/* ---------- “Muted” and empty states ---------- */
-.muted{ color: var(--muted); }
-.empty{
-  color: var(--muted);
-  padding: 10px 0;
+      <div className="footer">
+        Built with ❤️ — data from YouTube, GDELT & Google Trends.
+      </div>
+    </div>
+  );
 }
-
-/* ---------- Footer helper ---------- */
-.footer{
-  margin-top: 28px; color: var(--muted); font-size: 13px;
-  display:flex; justify-content:center;
-}
-
-/* ---------- Tiny utilities ---------- */
-.row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-.space{ flex:1; }
-.hide-sm{ display:none; }
-@media (min-width: 720px){ .hide-sm{ display:table-cell; } }
-
-/* ---------- Toasty success/error (optional hooks) ---------- */
-.toast{
-  position: fixed; right: 18px; bottom: 18px;
-  background: linear-gradient(180deg, var(--glass), transparent);
-  border: 1px solid var(--border-strong);
-  color: var(--text); padding: 10px 14px; border-radius: 12px;
-  box-shadow: var(--shadow-1);
-}
-.toast.success{ border-color: rgba(52,211,153,.45); }
-.toast.error{ border-color: rgba(255,107,107,.45); }
