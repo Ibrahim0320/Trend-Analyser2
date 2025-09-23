@@ -1,234 +1,261 @@
-// client/src/App.jsx
-import React, { useMemo, useState } from 'react';
-import { runResearch, fetchInsight } from './api';
-import WhyThisMatters from './components/WhyThisMatters';
+// /client/src/App.jsx
+import React, { useEffect, useMemo, useState } from 'react';
 import './styles.css';
+
+const number = (n, d = 0) =>
+  typeof n === 'number' && Number.isFinite(n) ? n.toFixed(d) : '—';
+const pct = (p) =>
+  typeof p === 'number' && Number.isFinite(p) ? `${Math.round(p)}%` : '—';
+const compact = (n) =>
+  typeof n === 'number' && Number.isFinite(n)
+    ? Intl.NumberFormat('en', { notation: 'compact' }).format(n)
+    : '—';
 
 export default function App() {
   const [region, setRegion] = useState('Nordics');
-  const [input, setInput] = useState('');
-  const [keywords, setKeywords] = useState(['trenchcoat', 'loafers', 'quiet luxury']);
-
+  const [working, setWorking] = useState(['trenchcoat', 'loafers', 'quiet luxury']);
+  const [addText, setAddText] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [run, setRun] = useState(null);
+  const [leaders, setLeaders] = useState([]);
+  const [rising, setRising] = useState([]);
+  const [bullets, setBullets] = useState([]);
+  const [insightLoading, setInsightLoading] = useState(false);
 
-  // research results state
-  const [entities, setEntities] = useState([]); // [{ entity, top: [...], agg: { engagement, authority }, ... }]
-  const [totalSignals, setTotalSignals] = useState(0);
+  const canRun = useMemo(() => working.length > 0 && !loading, [working, loading]);
 
-  // insights state
-  const [insight, setInsight] = useState({ loading: false, error: null, bullets: [] });
+  const onAdd = () => {
+    const v = addText.trim();
+    if (!v) return;
+    if (!working.includes(v)) setWorking((w) => [...w, v]);
+    setAddText('');
+  };
+  const onRemove = (kw) => setWorking((w) => w.filter((x) => x !== kw));
+  const resetWorking = () => setWorking([]);
 
-  function addKeyword() {
-    const k = input.trim();
-    if (!k) return;
-    if (!keywords.includes(k)) setKeywords(prev => [...prev, k]);
-    setInput('');
-  }
-
-  function removeKeyword(k) {
-    setKeywords(prev => prev.filter(x => x !== k));
-  }
-
-  async function handleRunResearch() {
+  async function doRun() {
     setLoading(true);
-    setError(null);
-    setEntities([]);
-    setTotalSignals(0);
-    setInsight({ loading: false, error: null, bullets: [] }); // reset brief
-
+    setBullets([]);
     try {
-      const data = await runResearch({ region, keywords });
-      // expects: { ok, region, keywords, totalSignals, entities: [{ entity, top: [...], agg: { engagement, authority } }] }
-      if (!data?.ok) throw new Error(data?.error || 'Run failed');
-      setEntities(data.entities || []);
-      setTotalSignals(Number(data.totalSignals || 0));
+      const res = await fetch('/api/research/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ region, keywords: working }),
+      });
+      const data = await res.json();
+      if (!data?.ok) throw new Error('run failed');
 
-      // Build top-3 payload for insights (engagement/authority only)
-      const topForInsight = (data.entities || [])
-        .slice(0, 3)
-        .map(e => ({
-          entity: e.entity,
-          agg: {
-            engagement: Number(e.agg?.engagement ?? 0),
-            authority: Number(e.agg?.authority ?? 0),
-          },
+      setRun(data);
+
+      // Panels
+      const entities = data.entities ?? [];
+      // Leaders: rank by (authority*0.55 + engagement*0.45)
+      const rows = entities
+        .flatMap((e) =>
+          (e.top || []).map((s) => ({
+            theme: e.entity,
+            provider: s.provider || '—',
+            authority: s.authority ?? 0,
+            engagement: s.engagement ?? 0,
+            link:
+              s.provider === 'youtube'
+                ? `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`
+                : s.provider === 'gdelt'
+                ? `https://search.gdeltproject.org/?query=${encodeURIComponent(e.entity)}`
+                : `https://trends.google.com/trends/explore?q=${encodeURIComponent(e.entity)}`,
+          })),
+        )
+        .map((r) => ({
+          ...r,
+          rankScore: 0.55 * r.authority + 0.45 * r.engagement,
         }))
-        // filter empty agg
-        .filter(x => x.entity && (x.agg.engagement > 0 || x.agg.authority > 0));
+        .filter((r) => r.rankScore > 0.02)
+        .sort((a, b) => b.rankScore - a.rankScore)
+        .slice(0, 10);
 
-      if (topForInsight.length === 0) {
-        setInsight({ loading: false, error: null, bullets: [] });
-      } else {
-        // Fire-and-show: fetch insight after tables render for perceived snappiness
-        setInsight({ loading: true, error: null, bullets: [] });
-        try {
-          const brief = await fetchInsight({ region: data.region || region, entities: topForInsight });
-          if (!brief?.ok) throw new Error(brief?.error || 'Insight failed');
-          setInsight({ loading: false, error: null, bullets: brief.bullets || [] });
-        } catch (err) {
-          setInsight({ loading: false, error: 'Could not generate insights right now.', bullets: [] });
-        }
-      }
-    } catch (err) {
-      setError(err.message || 'Something went wrong.');
+      setLeaders(rows);
+
+      // Rising: fallback score (engagement+authority mix) * recency decay
+      const nowTs = Date.now();
+      const risingRows = entities
+        .flatMap((e) =>
+          (e.top || []).map((s) => {
+            const t = new Date(s.observedAt || data.now || Date.now()).getTime();
+            const ageDays = Math.max(0, (nowTs - t) / (86400e3));
+            const base = 0.6 * (s.engagement ?? 0) + 0.4 * (s.authority ?? 0);
+            const decay = Math.exp(-ageDays / 7);
+            return { theme: e.entity, score: base * decay };
+          }),
+        )
+        .sort((a, b) => b.score - a.score)
+        .filter((r) => r.score > 0.02)
+        .slice(0, 5);
+      setRising(risingRows);
+
+      // Why this matters (OpenAI)
+      setInsightLoading(true);
+      const brief = await fetch('/api/briefs/insight', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ region, entities }),
+      }).then((r) => r.json());
+      if (brief?.ok && Array.isArray(brief.bullets)) setBullets(brief.bullets);
+    } catch (e) {
+      console.error(e);
     } finally {
+      setInsightLoading(false);
       setLoading(false);
     }
   }
 
-  const movers = useMemo(() => {
-    // Flatten entity aggregates into a compact view for the table
-    return (entities || []).map(e => ({
-      theme: e.entity,
-      heat: Number(e.avgScore ?? e.agg?.engagement ?? 0),
-      momentum: Number(e.momentum ?? 0),
-      forecast: Math.round((e.forecast ?? (e.agg?.engagement ?? 0) * 100)),
-      confidence: Math.round((e.confidence ?? (e.agg?.authority ?? 0)) * 100),
-      link: `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`,
-    }));
-  }, [entities]);
-
   return (
     <div className="app">
       <div className="toolbar">
-        <div className="toolbar-left">
-          <span className="brand">AI Trend Dashboard</span>
-        </div>
-
+        <div className="title">AI Trend Dashboard</div>
         <div className="toolbar-right">
-          <select value={region} onChange={e => setRegion(e.target.value)} className="select">
+          <select
+            className="select"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+          >
             <option>Nordics</option>
             <option>US</option>
             <option>UK</option>
-            <option>EU</option>
-            <option>Global</option>
+            <option>All</option>
           </select>
-
-          <button className="btn primary" onClick={handleRunResearch} disabled={loading}>
+          <button className="btn primary" disabled={!canRun} onClick={doRun}>
             {loading ? 'Running…' : 'Run research'}
           </button>
-
-          <div className="stats">
-            <div className="stat">
-              <div className="stat-num">{totalSignals}</div>
-              <div className="stat-label">Signals (last run)</div>
+          <div className="meta">
+            <div className="meta-item">
+              <div className="meta-num">{run?.totalSignals ?? 0}</div>
+              <div className="meta-label">Signals (last run)</div>
             </div>
-            <div className="stat">
-              <div className="stat-num">{keywords.length}</div>
-              <div className="stat-label">Keywords</div>
+            <div className="meta-item">
+              <div className="meta-num">{working.length}</div>
+              <div className="meta-label">Keywords</div>
             </div>
-            <div className="stat">
-              <div className="stat-num">{region}</div>
-              <div className="stat-label">Region</div>
+            <div className="meta-item">
+              <div className="meta-num">{region}</div>
+              <div className="meta-label">Region</div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Keyword chips + add box */}
-      <div className="card">
-        <div className="chip-row">
-          {keywords.map(k => (
-            <span key={k} className="chip">
-              {k}
-              <button className="chip-x" onClick={() => removeKeyword(k)}>×</button>
+      <div className="panel">
+        <div className="pill-row">
+          {working.map((kw) => (
+            <span key={kw} className="pill">
+              {kw}
+              <button className="pill-x" onClick={() => onRemove(kw)}>×</button>
             </span>
           ))}
         </div>
-
-        <div className="chip-actions">
+        <div className="kw-row">
           <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder="Add keyword…"
             className="input"
-            onKeyDown={e => {
-              if (e.key === 'Enter') addKeyword();
-            }}
+            placeholder="Add keyword…"
+            value={addText}
+            onChange={(e) => setAddText(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && onAdd()}
           />
-          <button className="btn" onClick={addKeyword}>Add</button>
-          <button className="btn subtle" onClick={() => setKeywords([])}>Reset working list</button>
-          <a className="btn outline" href="/api/briefs/pdf" rel="noreferrer">Download Brief (PDF)</a>
+          <button className="btn" onClick={onAdd}>Add</button>
+          <button className="btn ghost" onClick={resetWorking}>Reset working list</button>
+          <a className="btn ghost" href="/api/briefs/pdf" target="_blank" rel="noreferrer">
+            Download Brief (PDF)
+          </a>
         </div>
       </div>
-
-      {error && <div className="card text-red-400">Error: {error}</div>}
 
       <div className="grid">
-        {/* Top Movers */}
         <div className="card">
-          <div className="card__title">Top Movers (themes)</div>
-          <div className="tbl">
-            <div className="tbl-head">
-              <div>Theme</div>
-              <div>Heat</div>
-              <div>Momentum</div>
-              <div>Forecast (2w)</div>
-              <div>Confidence</div>
-              <div>A/W/A</div>
-              <div>Link</div>
-            </div>
-            <div className="tbl-body">
-              {movers.length === 0 && (
-                <div className="tbl-empty">—</div>
+          <div className="card-title">Top Movers (themes)</div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th className="tl">Theme</th>
+                <th className="tr">Heat</th>
+                <th className="tr">Momentum</th>
+                <th className="tr">Forecast (2w)</th>
+                <th className="tr">Confidence</th>
+                <th className="tr">A/W/A</th>
+                <th className="tr">Link</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(run?.entities ?? []).map((e) => {
+                // demo numbers based on agg to keep table filled
+                const heat = Math.min(1, (e.agg?.engagement ?? 0) * 0.8 + (e.agg?.authority ?? 0) * 0.2);
+                const forecast = Math.round((0.3 + heat * 0.3) * 100);
+                const conf = Math.round((e.agg?.authority ?? 0) * 100);
+                const link = `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`;
+                return (
+                  <tr key={e.entity}>
+                    <td className="tl">{e.entity}</td>
+                    <td className="tr">{number(heat, 2)}</td>
+                    <td className="tr">{number(0, 2)}</td>
+                    <td className="tr">{pct(forecast)}</td>
+                    <td className="tr">{pct(conf)}</td>
+                    <td className="tr">Aware</td>
+                    <td className="tr">
+                      <a className="icon-link" href={link} target="_blank" rel="noreferrer">↗</a>
+                    </td>
+                  </tr>
+                );
+              })}
+              {(!run || (run?.entities ?? []).length === 0) && (
+                <tr><td colSpan={7} className="td-empty">—</td></tr>
               )}
-              {movers.map((m) => (
-                <div className="tbl-row" key={m.theme}>
-                  <div>{m.theme}</div>
-                  <div>{Number.isFinite(m.heat) ? m.heat.toFixed(2) : '0.00'}</div>
-                  <div>{Number.isFinite(m.momentum) ? m.momentum.toFixed(2) : '0.00'}</div>
-                  <div>{Number.isFinite(m.forecast) ? `${m.forecast}%` : '—'}</div>
-                  <div>{Number.isFinite(m.confidence) ? `${m.confidence}%` : '—'}</div>
-                  <div>Aware</div>
-                  <div>
-                    <a href={m.link} target="_blank" rel="noreferrer" title="Open source search">
-                      ↗
-                    </a>
-                  </div>
-                </div>
+            </tbody>
+          </table>
+          {run?.now && <div className="card-foot">Last run: {new Date(run.now).toLocaleString()}</div>}
+        </div>
+
+        <div className="card">
+          <div className="card-title">Leaders (ranked)</div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th className="tl">Theme</th>
+                <th className="tl">Provider</th>
+                <th className="tr">Authority</th>
+                <th className="tr">Avg Eng</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaders.map((r, i) => (
+                <tr key={`${r.theme}-${i}`}>
+                  <td className="tl">{r.theme}</td>
+                  <td className="tl"><span className={`badge ${r.provider}`}>{r.provider}</span></td>
+                  <td className="tr">{pct(Math.round((r.authority ?? 0) * 100))}</td>
+                  <td className="tr">{pct(Math.round((r.engagement ?? 0) * 100))}</td>
+                </tr>
               ))}
-            </div>
+              {leaders.length === 0 && <tr><td colSpan={4} className="td-empty">—</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <div className="card-title">What’s rising</div>
+          <ul className="list">
+            {rising.map((r, i) => (
+              <li key={`${r.theme}-${i}`}>{r.theme}</li>
+            ))}
+            {rising.length === 0 && <li className="td-empty">—</li>}
+          </ul>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Why this matters</div>
+          <div className="bullets">
+            {insightLoading && <div className="skeleton lines-3" />}
+            {!insightLoading && bullets.map((b, i) => <div key={i} className="bullet">• {b}</div>)}
+            {!insightLoading && bullets.length === 0 && <div className="td-empty">—</div>}
           </div>
         </div>
-
-        {/* Leaders (ranked) – placeholder uses entities; refine as you like */}
-        <div className="card">
-          <div className="card__title">Leaders (ranked)</div>
-          <div className="tbl">
-            <div className="tbl-head">
-              <div>Theme</div>
-              <div>Provider</div>
-              <div>Authority</div>
-              <div>Avg Eng</div>
-            </div>
-            <div className="tbl-body">
-              {(entities || []).length === 0 && <div className="tbl-empty">—</div>}
-              {(entities || []).slice(0, 8).map(e => (
-                <div className="tbl-row" key={e.entity}>
-                  <div>{e.entity}</div>
-                  <div>{(e.top?.[0]?.provider || 'gdelt')}</div>
-                  <div>{Math.round((e.agg?.authority ?? 0) * 100)}%</div>
-                  <div>{Math.round((e.agg?.engagement ?? 0) * 100)}%</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* What's rising – you can later feed this from velocity signals */}
-        <div className="card">
-          <div className="card__title">What’s rising</div>
-          <div>—</div>
-        </div>
-
-        {/* Why this matters – driven by /api/insight */}
-        <WhyThisMatters state={insight} />
       </div>
-
-      <footer className="footer">
-        Built with ❤️ — data from YouTube, GDELT & Google Trends.
-      </footer>
     </div>
   );
 }
