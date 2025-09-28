@@ -1,325 +1,343 @@
-// client/src/App.jsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from "react";
 
-const DEFAULT_REGION = 'Nordics';
-const DEFAULT_KEYWORDS = ['trenchcoat', 'loafers', 'quiet luxury'];
+/** ----------------------
+ * Small utilities
+ * --------------------- */
+const fmtPct = (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`);
+const fmtNum = (v) => (v === null || v === undefined ? "—" : (Math.round(v * 100) / 100).toFixed(2));
 
-function pct(x) {
-  if (x == null || Number.isNaN(x)) return '—';
-  return `${Math.round(x * 100)}%`;
+/** ----------------------------------------------------------------
+ * Top Movers Table (sortable, loading & empty states built-in)
+ * ---------------------------------------------------------------- */
+function TopMoversTable({ rows, loading, onLink }) {
+  const [sort, setSort] = useState({ key: "heat", dir: "desc" });
+
+  const sorted = useMemo(() => {
+    if (!rows?.length) return [];
+    const { key, dir } = sort;
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const av = a[key] ?? 0;
+      const bv = b[key] ?? 0;
+      if (av === bv) return 0;
+      return dir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+    });
+    return copy;
+  }, [rows, sort]);
+
+  const changeSort = (key) => {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+  };
+
+  return (
+    <div className="card">
+      <div className="card__title">Top Movers (themes)</div>
+      <div className="card__body">
+        {/* Loading */}
+        {loading && (
+          <div className="tbl tbl--loading">
+            <div className="skeleton skeleton--row" />
+            <div className="skeleton skeleton--row" />
+            <div className="skeleton skeleton--row" />
+          </div>
+        )}
+
+        {/* Empty */}
+        {!loading && (!rows || rows.length === 0) && (
+          <div className="tbl tbl--empty">
+            <div className="empty">No results yet. Try “brand + product + niche”, then Run research.</div>
+          </div>
+        )}
+
+        {/* Ready */}
+        {!loading && rows && rows.length > 0 && (
+          <div className="tbl tbl--dense">
+            <div className="tbl__row tbl__head">
+              <button className="tbl__cell tbl__headcell" onClick={() => changeSort("theme")}>Theme</button>
+              <button className="tbl__cell tbl__headcell tbl__cell--num" onClick={() => changeSort("heat")}>Heat</button>
+              <button className="tbl__cell tbl__headcell tbl__cell--num" onClick={() => changeSort("momentum")}>Momentum</button>
+              <button className="tbl__cell tbl__headcell tbl__cell--num" onClick={() => changeSort("forecast")}>Forecast (2w)</button>
+              <button className="tbl__cell tbl__headcell tbl__cell--num" onClick={() => changeSort("confidence")}>Confidence</button>
+              <div className="tbl__cell tbl__headcell">A/W/A</div>
+              <div className="tbl__cell tbl__headcell tbl__cell--action">Link</div>
+            </div>
+
+            {sorted.map((r) => (
+              <div key={r.theme} className="tbl__row">
+                <div className="tbl__cell">{r.theme}</div>
+                <div className="tbl__cell tbl__cell--num">{fmtNum(r.heat)}</div>
+                <div className="tbl__cell tbl__cell--num">{fmtNum(r.momentum)}</div>
+                <div className="tbl__cell tbl__cell--num">{fmtPct(r.forecast)}</div>
+                <div className="tbl__cell tbl__cell--num">{fmtPct(r.confidence)}</div>
+                <div className="tbl__cell"><span className="badge">{r.awa ?? "Aware"}</span></div>
+                <div className="tbl__cell tbl__cell--action">
+                  <a className="icon-btn" href={r.link} target="_blank" rel="noreferrer" onClick={(e) => onLink?.(r, e)} aria-label="Open sources">↗</a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
+/** --------------------
+ * Leaders (compact)
+ * ------------------- */
+function LeadersPanel({ items, loading }) {
+  return (
+    <div className="card">
+      <div className="card__title">Leaders (ranked)</div>
+      <div className="card__body">
+        {loading && (
+          <>
+            <div className="skeleton skeleton--row" />
+            <div className="skeleton skeleton--row" />
+          </>
+        )}
+        {!loading && (!items || items.length === 0) && <div className="empty">—</div>}
+        {!loading && items && items.length > 0 && (
+          <div className="tbl tbl--dense">
+            <div className="tbl__row tbl__head" style={{ gridTemplateColumns: "1.1fr .9fr .7fr .7fr" }}>
+              <div className="tbl__cell tbl__headcell">Theme</div>
+              <div className="tbl__cell tbl__headcell">Provider</div>
+              <div className="tbl__cell tbl__headcell tbl__cell--num">Authority Avg</div>
+              <div className="tbl__cell tbl__headcell tbl__cell--num">Eng</div>
+            </div>
+            {items.map((x, i) => (
+              <div key={`${x.entity}-${i}`} className="tbl__row" style={{ gridTemplateColumns: "1.1fr .9fr .7fr .7fr" }}>
+                <div className="tbl__cell">{x.entity}</div>
+                <div className="tbl__cell">{x.provider}</div>
+                <div className="tbl__cell tbl__cell--num">{fmtPct(x.avgAuth ?? 0.9)}</div>
+                <div className="tbl__cell tbl__cell--num">{fmtPct(x.avgEng ?? 0)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** -------------------------
+ * Why this matters panel
+ * ------------------------ */
+function WhyPanel({ bullets, loading, onRegenerate }) {
+  return (
+    <div className="card">
+      <div className="card__title">Why this matters</div>
+      <div className="card__body">
+        {loading && (
+          <>
+            <div className="skeleton skeleton--row" />
+            <div className="skeleton skeleton--row" />
+          </>
+        )}
+        {!loading && (!bullets || bullets.length === 0) && <div className="empty">—</div>}
+        {!loading && bullets && bullets.length > 0 && (
+          <>
+            <ul className="list">
+              {bullets.map((b, i) => (
+                <li key={i} className="list__item">
+                  <span>• {b}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="caption">
+              Generated with AI.{" "}
+              <button className="btn btn--ghost" style={{ height: 28, padding: "0 10px", marginLeft: 8 }} onClick={onRegenerate}>
+                Regenerate
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** =========================================================
+ * MAIN APP — hooks into your existing endpoints as-is
+ * ======================================================== */
 export default function App() {
-  // Controls
-  const [region, setRegion] = useState(DEFAULT_REGION);
-  const [keywords, setKeywords] = useState(DEFAULT_KEYWORDS);
-  const [addText, setAddText] = useState('');
+  const [region, setRegion] = useState("Nordics");
+  const [kwInput, setKwInput] = useState("");
+  const [keywords, setKeywords] = useState(["trenchcoat", "loafers", "quiet luxury"]);
+  const [loadingRun, setLoadingRun] = useState(false);
 
-  // Data
-  const [rows, setRows] = useState([]);               // preferred data from /api/research/run
-  const [leaders, setLeaders] = useState([]);         // simple leaders panel
-  const [whyBullets, setWhyBullets] = useState([]);   // /api/insight
-  const [stats, setStats] = useState({ signals: 0, keywords: 0 });
+  // panels
+  const [topRows, setTopRows] = useState([]);          // [{ theme, heat, momentum, forecast, confidence, awa, link }]
+  const [leaders, setLeaders] = useState([]);          // [{ entity, provider, avgAuth, avgEng }]
+  const [bullets, setBullets] = useState([]);          // ["...", "..."]
+  const [loadingInsight, setLoadingInsight] = useState(false);
+  const [loadingLeaders, setLoadingLeaders] = useState(false);
 
-  // UX
-  const [isRunning, setIsRunning] = useState(false);
-  const [err, setErr] = useState('');
-
-  // Sources modal
-  const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [sourcesFor, setSourcesFor] = useState({ entity: '', citations: [] });
-
-  const openSources = (entity, citations = []) => {
-    setSourcesFor({ entity, citations });
-    setSourcesOpen(true);
+  const addKw = () => {
+    const val = kwInput.trim();
+    if (!val) return;
+    if (!keywords.includes(val)) setKeywords((ks) => [...ks, val]);
+    setKwInput("");
   };
-  const closeSources = () => setSourcesOpen(false);
+  const removeKw = (k) => setKeywords((ks) => ks.filter((x) => x !== k));
 
-  // derived: what’s rising (momentum top > 0)
-  const rising = useMemo(() => {
-    const list = (rows || [])
-      .slice()
-      .filter(r => (r.momentum ?? 0) > 0)
-      .sort((a, b) => b.momentum - a.momentum)
-      .slice(0, 5);
-    return list;
-  }, [rows]);
+  /** Map your /api/research/run result to table rows.
+   *  Adjust this function if your shape differs! */
+  const mapRunToRows = (runData) => {
+    // Example tolerated shapes:
+    // A) { entities: [{ entity, avgScore, avgEng, avgAuth, link } ...] }
+    // B) { data: [{ entity, heat, momentum, forecast, confidence, awa, link } ...] }
+    if (!runData) return [];
+    if (Array.isArray(runData.data)) {
+      return runData.data.map((d) => ({
+        theme: d.entity ?? d.theme,
+        heat: d.heat ?? d.avgScore ?? 0,
+        momentum: d.momentum ?? 0,
+        forecast: typeof d.forecast === "number" ? d.forecast : (d.forecastPct ?? 0),
+        confidence: typeof d.confidence === "number" ? d.confidence : (d.confidencePct ?? 0),
+        awa: d.awa ?? "Aware",
+        link: d.link ?? (d.entity ? `https://www.youtube.com/results?search_query=${encodeURIComponent(d.entity)}` : "#"),
+      }));
+    }
+    if (Array.isArray(runData.entities)) {
+      return runData.entities.map((e) => ({
+        theme: e.entity,
+        heat: e.avgScore ?? e.agg?.engagement ?? 0,
+        momentum: 0,
+        forecast: 0.3, // placeholder if your API doesn’t send it
+        confidence: e.avgAuth ?? e.agg?.authority ?? 0.9,
+        awa: "Aware",
+        link: `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`,
+      }));
+    }
+    return [];
+  };
 
-  // Add/remove keywords
-  const addKeyword = () => {
-    const k = addText.trim();
-    if (!k) return;
-    if (!keywords.includes(k)) setKeywords(prev => [...prev, k]);
-    setAddText('');
-  };
-  const removeKeyword = (k) => {
-    setKeywords(prev => prev.filter(x => x !== k));
-  };
-  const resetWorking = () => {
-    setKeywords(DEFAULT_KEYWORDS);
-  };
-
-  // Core: run research
-  const runResearch = async () => {
-    setIsRunning(true);
-    setErr('');
-    setWhyBullets([]);
+  // Fetch leaders (optional helper if you have /api/themes/top)
+  async function fetchLeaders() {
     try {
-      const res = await fetch('/api/research/run', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
+      setLoadingLeaders(true);
+      const res = await fetch(`/api/themes/top?region=${encodeURIComponent(region)}&limit=10`);
+      if (!res.ok) throw new Error("leaders fetch failed");
+      const json = await res.json(); // expects { ok, data:[{entity, provider, avgAuth, avgEng}] }
+      setLeaders(json?.data ?? []);
+    } catch (e) {
+      console.warn("leaders error:", e);
+      setLeaders([]);
+    } finally {
+      setLoadingLeaders(false);
+    }
+  }
+
+  async function fetchInsight(rows) {
+    try {
+      setLoadingInsight(true);
+      const entities = (rows ?? topRows).slice(0, 5).map((r) => ({
+        entity: r.theme,
+        agg: { engagement: r.heat ?? 0, authority: r.confidence ?? 0.9 },
+      }));
+      const res = await fetch("/api/insight", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ region, entities }),
+      });
+      if (!res.ok) throw new Error("insight request failed");
+      const json = await res.json(); // { ok, bullets:[], provider }
+      setBullets(json?.bullets ?? []);
+    } catch (e) {
+      console.warn("insight error:", e);
+      setBullets([]);
+    } finally {
+      setLoadingInsight(false);
+    }
+  }
+
+  async function runResearch() {
+    setLoadingRun(true);
+    setTopRows([]);
+    setBullets([]);
+    setLeaders([]);
+
+    try {
+      // 1) Run
+      const res = await fetch("/api/research/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ region, keywords }),
       });
-      if (!res.ok) throw new Error(`run failed ${res.status}`);
-      const json = await res.json();
+      const json = await res.json(); // tolerant mapping below
+      const rows = mapRunToRows(json);
+      setTopRows(rows);
 
-      const data = Array.isArray(json.data) ? json.data : [];
-      setRows(data);
-      setStats({ signals: json.totalSignals ?? data.length, keywords: (json.keywords ?? keywords).length });
-
-      // leaders: simple projection from legacy entities or from data
-      const legacy = Array.isArray(json.entities) ? json.entities : [];
-      const leadersRows = legacy.length
-        ? legacy.map(e => ({
-            theme: e.entity,
-            provider: 'mixed',
-            authority: (e.avgAuth ?? e.agg?.authority ?? 0),
-            eng: (e.agg?.engagement ?? e.avgScore ?? 0),
-          }))
-        : (data || []).map(r => ({
-            theme: r.entity, provider: 'mixed', authority: r.confidence ?? 0, eng: r.heat ?? 0,
-          }));
-      leadersRows.sort((a, b) => b.authority - a.authority);
-      setLeaders(leadersRows.slice(0, 10));
-
-      // Follow-up: Why this matters (send top 3)
-      const topForInsight = (data || [])
-        .slice(0, 3)
-        .map(r => ({ entity: r.entity, agg: { engagement: r.heat ?? 0, authority: r.confidence ?? 0 } }));
-      if (topForInsight.length) {
-        try {
-          const ins = await fetch('/api/insight', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ region, entities: topForInsight }),
-          });
-          if (ins.ok) {
-            const ij = await ins.json();
-            if (Array.isArray(ij.bullets) && ij.bullets.length) setWhyBullets(ij.bullets);
-          }
-        } catch {
-          /* soft fail – keep UI responsive */
-        }
-      }
+      // 2) Parallel: leaders + insight
+      fetchLeaders();
+      fetchInsight(rows);
     } catch (e) {
-      console.error(e);
-      setErr(e.message || 'Run failed');
+      console.error("run error", e);
     } finally {
-      setIsRunning(false);
+      setLoadingRun(false);
     }
-  };
-
-  // Auto-run once on mount to show something
-  useEffect(() => {
-    // noop: keep current behaviour manual-only
-  }, []);
+  }
 
   return (
     <div className="app">
-      {/* Header */}
+      {/* Header / toolbar */}
       <div className="toolbar">
-        <div className="title">AI Trend Dashboard</div>
-        <div className="spacer" />
-        <div className="kpi">
-          <div className="kpi-val">{stats.signals}</div>
-          <div className="kpi-lbl">Signals (last run)</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-val">{stats.keywords}</div>
-          <div className="kpi-lbl">Keywords</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-val">{region}</div>
-          <div className="kpi-lbl">Region</div>
-        </div>
-      </div>
+        <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: 0.2 }}>AI Trend Dashboard</div>
 
-      {/* Controls */}
-      <div className="card">
-        <div className="row gap">
-          <select
-            value={region}
-            onChange={(e) => setRegion(e.target.value)}
-            className="select"
-            disabled={isRunning}
-          >
-            <option>Nordics</option>
-            <option>US</option>
-            <option>UK</option>
-            <option>EU</option>
-            <option>All</option>
-          </select>
-          <button className="btn primary" onClick={runResearch} disabled={isRunning}>
-            {isRunning ? 'Running…' : 'Run research'}
-          </button>
-          {err && <div className="error">{err}</div>}
-        </div>
+        <select className="input" value={region} onChange={(e) => setRegion(e.target.value)}>
+          <option>Nordics</option>
+          <option>US</option>
+          <option>UK</option>
+          <option>France</option>
+          <option>Global</option>
+        </select>
 
-        {/* chips */}
-        <div className="chips">
-          {keywords.map(k => (
-            <div key={k} className="chip">
-              <span>{k}</span>
-              <button onClick={() => removeKeyword(k)} aria-label="Remove" className="chip-x">×</button>
-            </div>
-          ))}
-        </div>
+        <button className="btn" onClick={runResearch} disabled={loadingRun}>
+          {loadingRun ? "Running…" : "Run research"}
+        </button>
 
-        {/* add keyword */}
-        <div className="row gap">
-          <input
-            className="input"
-            placeholder="Add keyword…"
-            value={addText}
-            onChange={(e) => setAddText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') addKeyword(); }}
-            disabled={isRunning}
-          />
-          <button className="btn" onClick={addKeyword} disabled={isRunning || !addText.trim()}>Add</button>
-          <button className="btn ghost" onClick={resetWorking} disabled={isRunning}>Reset working list</button>
-          <a className="btn ghost" href="/api/briefs/pdf" target="_blank" rel="noreferrer">Download Brief (PDF)</a>
-        </div>
-      </div>
-
-      <div className="grid two">
-        {/* Top movers */}
-        <div className="card">
-          <div className="card-head">Top Movers (themes)</div>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Theme</th>
-                <th>Heat</th>
-                <th>Momentum</th>
-                <th>Forecast</th>
-                <th>Confidence</th>
-                <th>A/W/A</th>
-                <th>Link</th>
-                <th>Sources</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(r => (
-                <tr key={r.entity}>
-                  <td>{r.entity}</td>
-                  <td>{pct(r.heat)}</td>
-                  <td>{pct(r.momentum)}</td>
-                  <td>{pct(r.forecast)}</td>
-                  <td>{pct(r.confidence)}</td>
-                  <td>{r.awa}</td>
-                  <td>
-                    <a href={r.link} target="_blank" rel="noreferrer" className="btn btn-icon" title="Open best link">↗</a>
-                  </td>
-                  <td>
-                    <button className="btn" onClick={() => openSources(r.entity, r.citations || [])}>
-                      View sources
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {!rows.length && (
-                <tr><td colSpan={8} style={{ opacity: 0.6 }}>—</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Leaders */}
-        <div className="card">
-          <div className="card-head">Leaders (ranked)</div>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Theme</th>
-                <th>Provider</th>
-                <th>Authority Avg</th>
-                <th>Eng</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leaders.map((l, i) => (
-                <tr key={`${l.theme}-${i}`}>
-                  <td>{l.theme}</td>
-                  <td>{l.provider}</td>
-                  <td>{pct(l.authority)}</td>
-                  <td>{pct(l.eng)}</td>
-                </tr>
-              ))}
-              {!leaders.length && (
-                <tr><td colSpan={4} style={{ opacity: 0.6 }}>—</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* What’s rising */}
-      <div className="card">
-        <div className="card-head">What’s rising</div>
-        <ul className="bullets">
-          {rising.length === 0 && <li>—</li>}
-          {rising.map(r => (
-            <li key={r.entity}>
-              <strong>{r.entity}</strong> · momentum {pct(r.momentum)} · confidence {pct(r.confidence)}
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Why this matters */}
-      <div className="card">
-        <div className="card-head">Why this matters</div>
-        <ul className="bullets">
-          {whyBullets.length === 0 && <li>—</li>}
-          {whyBullets.map((b, i) => <li key={i}>{b}</li>)}
-        </ul>
-      </div>
-
-      {/* Sources modal */}
-      {sourcesOpen && (
-        <div className="modal-backdrop" onClick={closeSources}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <div className="modal-title">Sources: {sourcesFor.entity}</div>
-              <button className="btn btn-icon" onClick={closeSources}>✕</button>
-            </div>
-            <div className="modal-body">
-              {(!sourcesFor.citations || !sourcesFor.citations.length) && (
-                <div style={{ opacity: 0.7 }}>No citations available.</div>
-              )}
-              {sourcesFor.citations?.map((c, i) => (
-                <div key={i} className="cite-row">
-                  <div className="cite-provider">{c.provider}</div>
-                  <div className="cite-title">
-                    {c.url ? (
-                      <a href={c.url} target="_blank" rel="noreferrer">{c.title || '(untitled)'}</a>
-                    ) : (c.title || '(untitled)')}
-                  </div>
-                  <div className="cite-meta">
-                    <span>Auth {(c.authority * 100).toFixed?.(0) || Math.round(c.authority || 0)}%</span>
-                    <span>•</span>
-                    <span>{new Date(c.when).toLocaleString()}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+        <div className="toolbar__right">
+          <div className="stat">
+            <div className="stat__label">Keywords</div>
+            <div className="stat__value">{keywords.length}</div>
+          </div>
+          <div className="stat">
+            <div className="stat__label">Region</div>
+            <div className="stat__value">{region}</div>
           </div>
         </div>
-      )}
+      </div>
 
-      <footer className="footer">
-        Built with ❤️ — data from YouTube, Reddit, GDELT & Google Trends.
-      </footer>
+      {/* Keyword tokens */}
+      <div className="tokens card">
+        {keywords.map((k) => (
+          <span key={k} className="badge" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {k}
+            <button className="icon-btn" style={{ width: 22, height: 22, fontSize: 12 }} onClick={() => removeKw(k)} aria-label={`Remove ${k}`}>×</button>
+          </span>
+        ))}
+        <input className="input" style={{ minWidth: 160 }} placeholder="Add keyword…" value={kwInput} onChange={(e) => setKwInput(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') addKw(); }} />
+        <button className="btn btn--ghost" onClick={addKw}>Add</button>
+      </div>
+
+      {/* Panels */}
+      <div className="panel-grid">
+        <TopMoversTable rows={topRows} loading={loadingRun} onLink={() => {}} />
+        <LeadersPanel items={leaders} loading={loadingLeaders} />
+        <div className="card" style={{ gridColumn: "1 / -1" }}>
+          <div className="card__title">What’s rising</div>
+          <div className="card__body">
+            <div className="empty">—</div>
+          </div>
+        </div>
+        <WhyPanel bullets={bullets} loading={loadingInsight} onRegenerate={() => fetchInsight()} />
+      </div>
+
+      {/* Footer */}
+      <div style={{ color: "var(--muted)", textAlign: "center", marginTop: 28 }}>
+        Built with ♥ — data from YouTube, GDELT & Google Trends.
+      </div>
     </div>
   );
 }
