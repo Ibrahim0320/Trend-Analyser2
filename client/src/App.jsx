@@ -252,32 +252,109 @@ export default function App() {
     }
   }
 
-  async function runResearch() {
-    setLoadingRun(true);
-    setTopRows([]);
-    setBullets([]);
-    setLeaders([]);
+  const runResearch = async () => {
+  setIsRunning(true);
+  setErr('');
+  setWhyBullets([]);
 
-    try {
-      // 1) Run
-      const res = await fetch("/api/research/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ region, keywords }),
-      });
-      const json = await res.json(); // tolerant mapping below
-      const rows = mapRunToRows(json);
-      setTopRows(rows);
+  try {
+    // 1) Run
+    const res = await fetch('/api/research/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ region, keywords }),
+    });
 
-      // 2) Parallel: leaders + insight
-      fetchLeaders();
-      fetchInsight(rows);
-    } catch (e) {
-      console.error("run error", e);
-    } finally {
-      setLoadingRun(false);
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new Error(`run failed ${res.status}: ${t || res.statusText}`);
     }
+
+    const json = await res.json();
+    const data = Array.isArray(json.data) ? json.data : [];
+    setRows(data);
+    setStats({
+      signals: json.totalSignals ?? data.length,
+      keywords: (json.keywords ?? keywords).length,
+    });
+
+    // Leaders (left as-is)
+    const legacy = Array.isArray(json.entities) ? json.entities : [];
+    const leadersRows = legacy.length
+      ? legacy.map(e => ({
+          theme: e.entity,
+          provider: 'mixed',
+          authority: (e.avgAuth ?? e.agg?.authority ?? 0),
+          eng: (e.agg?.engagement ?? e.avgScore ?? 0),
+        }))
+      : (data || []).map(r => ({
+          theme: r.entity,
+          provider: 'mixed',
+          authority: r.confidence ?? 0,
+          eng: r.heat ?? 0,
+        }));
+    leadersRows.sort((a, b) => b.authority - a.authority);
+    setLeaders(leadersRows.slice(0, 10));
+
+    // 2) Prepare INSIGHT payload exactly as the API expects
+    // Prefer the new `data` rows. If empty, fall back to legacy entities.
+    let insightEntities = [];
+
+    if (data.length) {
+      // data rows: entity, heat ~ engagement proxy, confidence ~ authority
+      insightEntities = data
+        .slice(0, 3)
+        .map(r => ({
+          entity: r.entity,
+          agg: {
+            engagement: typeof r.heat === 'number' ? r.heat : 0,
+            authority: typeof r.confidence === 'number' ? r.confidence : 0,
+          },
+        }))
+        .filter(e => e.entity && (e.agg.engagement > 0 || e.agg.authority > 0));
+    } else if (legacy.length) {
+      // legacy rows: avgScore ~ engagement proxy, avgAuth ~ authority
+      insightEntities = legacy
+        .slice(0, 3)
+        .map(e => ({
+          entity: e.entity,
+          agg: {
+            engagement: typeof e.avgScore === 'number' ? e.avgScore : (e.agg?.engagement ?? 0),
+            authority: typeof e.avgAuth === 'number' ? e.avgAuth : (e.agg?.authority ?? 0),
+          },
+        }))
+        .filter(e => e.entity && (e.agg.engagement > 0 || e.agg.authority > 0));
+    }
+
+    // Only call /api/insight when we have something meaningful
+    if (insightEntities.length) {
+      try {
+        const ins = await fetch('/api/insight', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ region, entities: insightEntities }),
+        });
+
+        if (!ins.ok) {
+          const body = await ins.text().catch(() => '');
+          // log the server’s validation details to console to debug quickly
+          console.warn('insight error:', ins.status, body);
+        } else {
+          const ij = await ins.json();
+          if (Array.isArray(ij.bullets) && ij.bullets.length) setWhyBullets(ij.bullets);
+        }
+      } catch (ie) {
+        console.warn('insight request failed', ie);
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    setErr(e.message || 'Run failed');
+  } finally {
+    setIsRunning(false);
   }
+};
+
 
   return (
     <div className="app">
