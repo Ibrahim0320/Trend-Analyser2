@@ -1,15 +1,18 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
+import SourcesModal from "./SourcesModal";
 
 /** ----------------------
  * Small utilities
  * --------------------- */
 const fmtPct = (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`);
 const fmtNum = (v) => (v === null || v === undefined ? "—" : (Math.round(v * 100) / 100).toFixed(2));
+const clamp01 = (x) => (Number.isFinite(x) ? (x < 0 ? 0 : x > 1 ? 1 : x) : 0);
+const LS_KEY_LAST_RUN = "ta:lastRun:v2";
 
 /** ----------------------------------------------------------------
- * Top Movers Table (sortable, loading & empty states built-in)
+ * Top Movers Table
  * ---------------------------------------------------------------- */
-function TopMoversTable({ rows, loading, onLink }) {
+function TopMoversTable({ rows, loading, onOpenSources }) {
   const [sort, setSort] = useState({ key: "heat", dir: "desc" });
 
   const sorted = useMemo(() => {
@@ -33,7 +36,6 @@ function TopMoversTable({ rows, loading, onLink }) {
     <div className="card">
       <div className="card__title">Top Movers (themes)</div>
       <div className="card__body">
-        {/* Loading */}
         {loading && (
           <div className="tbl tbl--loading">
             <div className="skeleton skeleton--row" />
@@ -42,14 +44,12 @@ function TopMoversTable({ rows, loading, onLink }) {
           </div>
         )}
 
-        {/* Empty */}
         {!loading && (!rows || rows.length === 0) && (
           <div className="tbl tbl--empty">
             <div className="empty">No results yet. Try “brand + product + niche”, then Run research.</div>
           </div>
         )}
 
-        {/* Ready */}
         {!loading && rows && rows.length > 0 && (
           <div className="tbl tbl--dense">
             <div className="tbl__row tbl__head">
@@ -59,7 +59,7 @@ function TopMoversTable({ rows, loading, onLink }) {
               <button className="tbl__cell tbl__headcell tbl__cell--num" onClick={() => changeSort("forecast")}>Forecast (2w)</button>
               <button className="tbl__cell tbl__headcell tbl__cell--num" onClick={() => changeSort("confidence")}>Confidence</button>
               <div className="tbl__cell tbl__headcell">A/W/A</div>
-              <div className="tbl__cell tbl__headcell tbl__cell--action">Link</div>
+              <div className="tbl__cell tbl__headcell tbl__cell--action">Sources</div>
             </div>
 
             {sorted.map((r) => (
@@ -71,7 +71,7 @@ function TopMoversTable({ rows, loading, onLink }) {
                 <div className="tbl__cell tbl__cell--num">{fmtPct(r.confidence)}</div>
                 <div className="tbl__cell"><span className="badge">{r.awa ?? "Aware"}</span></div>
                 <div className="tbl__cell tbl__cell--action">
-                  <a className="icon-btn" href={r.link} target="_blank" rel="noreferrer" onClick={(e) => onLink?.(r, e)} aria-label="Open sources">↗</a>
+                  <button className="btn btn--ghost" onClick={() => onOpenSources?.(r)}>View</button>
                 </div>
               </div>
             ))}
@@ -158,7 +158,7 @@ function WhyPanel({ bullets, loading, onRegenerate }) {
 }
 
 /** =========================================================
- * MAIN APP — hooks into your existing endpoints as-is
+ * MAIN APP
  * ======================================================== */
 export default function App() {
   const [region, setRegion] = useState("Nordics");
@@ -167,11 +167,23 @@ export default function App() {
   const [loadingRun, setLoadingRun] = useState(false);
 
   // panels
-  const [topRows, setTopRows] = useState([]);          // [{ theme, heat, momentum, forecast, confidence, awa, link }]
-  const [leaders, setLeaders] = useState([]);          // [{ entity, provider, avgAuth, avgEng }]
-  const [bullets, setBullets] = useState([]);          // ["...", "..."]
+  const [topRows, setTopRows] = useState([]);          // enriched rows with citations
+  const [leaders, setLeaders] = useState([]);
+  const [bullets, setBullets] = useState([]);
   const [loadingInsight, setLoadingInsight] = useState(false);
   const [loadingLeaders, setLoadingLeaders] = useState(false);
+
+  // telemetry
+  const [sampleSize, setSampleSize] = useState(0);
+  const [lastRunAt, setLastRunAt] = useState(null);
+
+  // sources modal
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTheme, setModalTheme] = useState("");
+  const [modalCitations, setModalCitations] = useState([]);
+
+  // "What's rising"
+  const [rising, setRising] = useState([]);
 
   const addKw = () => {
     const val = kwInput.trim();
@@ -181,45 +193,61 @@ export default function App() {
   };
   const removeKw = (k) => setKeywords((ks) => ks.filter((x) => x !== k));
 
-  /** Map your /api/research/run result to table rows.
-   *  Adjust this function if your shape differs! */
+  // Try to hydrate last run telemetry on load
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY_LAST_RUN);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed?.at) setLastRunAt(parsed.at);
+    } catch {}
+  }, []);
+
+  /** Mapping tolerant to the backend’s shape, preserving citations if present */
   const mapRunToRows = (runData) => {
-    // Example tolerated shapes:
-    // A) { entities: [{ entity, avgScore, avgEng, avgAuth, link } ...] }
-    // B) { data: [{ entity, heat, momentum, forecast, confidence, awa, link } ...] }
     if (!runData) return [];
+
+    // new shape preferred: data: [{ entity, heat, momentum, forecast, confidence, awa, link, citations }]
     if (Array.isArray(runData.data)) {
       return runData.data.map((d) => ({
         theme: d.entity ?? d.theme,
-        heat: d.heat ?? d.avgScore ?? 0,
-        momentum: d.momentum ?? 0,
-        forecast: typeof d.forecast === "number" ? d.forecast : (d.forecastPct ?? 0),
-        confidence: typeof d.confidence === "number" ? d.confidence : (d.confidencePct ?? 0),
+        heat: clamp01(d.heat ?? d.avgScore ?? 0),
+        momentum: Number.isFinite(d.momentum) ? d.momentum : 0,
+        forecast: clamp01(
+          typeof d.forecast === "number" ? d.forecast : (d.forecastPct ?? 0)
+        ),
+        confidence: clamp01(
+          typeof d.confidence === "number" ? d.confidence : (d.confidencePct ?? 0)
+        ),
         awa: d.awa ?? "Aware",
         link: d.link ?? (d.entity ? `https://www.youtube.com/results?search_query=${encodeURIComponent(d.entity)}` : "#"),
+        citations: Array.isArray(d.citations) ? d.citations : [],
       }));
     }
+
+    // legacy: entities: [{ entity, avgScore, avgAuth, link, citations? }]
     if (Array.isArray(runData.entities)) {
       return runData.entities.map((e) => ({
         theme: e.entity,
-        heat: e.avgScore ?? e.agg?.engagement ?? 0,
+        heat: clamp01(e.avgScore ?? e.agg?.engagement ?? 0),
         momentum: 0,
-        forecast: 0.3, // placeholder if your API doesn’t send it
-        confidence: e.avgAuth ?? e.agg?.authority ?? 0.9,
+        forecast: 0.3,
+        confidence: clamp01(e.avgAuth ?? e.agg?.authority ?? 0.9),
         awa: "Aware",
-        link: `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`,
+        link: e.link ?? `https://www.youtube.com/results?search_query=${encodeURIComponent(e.entity)}`,
+        citations: Array.isArray(e.citations) ? e.citations : [],
       }));
     }
     return [];
   };
 
-  // Fetch leaders (optional helper if you have /api/themes/top)
+  // Leaders
   async function fetchLeaders() {
     try {
       setLoadingLeaders(true);
       const res = await fetch(`/api/themes/top?region=${encodeURIComponent(region)}&limit=10`);
       if (!res.ok) throw new Error("leaders fetch failed");
-      const json = await res.json(); // expects { ok, data:[{entity, provider, avgAuth, avgEng}] }
+      const json = await res.json();
       setLeaders(json?.data ?? []);
     } catch (e) {
       console.warn("leaders error:", e);
@@ -229,28 +257,14 @@ export default function App() {
     }
   }
 
-  /** ---- NEW: tight clamping helper and safer insight flow ---- */
-  function clamp01(x) {
-    const n = Number.isFinite(x) ? x : 0;
-    return n < 0 ? 0 : n > 1 ? 1 : n;
-  }
-
+  // Insight
   async function fetchInsight(rowsArg) {
     const src = Array.isArray(rowsArg) ? rowsArg : topRows;
+    const entities = (src || []).slice(0, 5).map((r) => ({
+      entity: String(r.theme || "").trim(),
+      agg: { engagement: clamp01(r.heat), authority: clamp01(r.confidence ?? 0) },
+    })).filter((e) => e.entity && (e.agg.engagement > 0 || e.agg.authority > 0));
 
-    // Build entities the API expects and filter out weak/empty values
-    const entities = (src || [])
-      .slice(0, 5)
-      .map((r) => ({
-        entity: String(r.theme || "").trim(),
-        agg: {
-          engagement: clamp01(r.heat),
-          authority: clamp01(r.confidence ?? 0),
-        },
-      }))
-      .filter((e) => e.entity && (e.agg.engagement > 0 || e.agg.authority > 0));
-
-    // If nothing meaningful, skip calling the API
     if (entities.length === 0) {
       setBullets([]);
       return;
@@ -263,15 +277,13 @@ export default function App() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ region, entities }),
       });
-
       if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        console.warn("insight error:", res.status, body);
+        const t = await res.text().catch(() => "");
+        console.warn("insight error", res.status, t);
         setBullets([]);
         return;
       }
-
-      const json = await res.json(); // { ok, bullets:[], provider }
+      const json = await res.json();
       setBullets(Array.isArray(json?.bullets) ? json.bullets : []);
     } catch (e) {
       console.warn("insight request failed", e);
@@ -281,15 +293,39 @@ export default function App() {
     }
   }
 
-  /** ---- NEW: hardened run flow with normalization and error text ---- */
+  // Compute “What’s rising” from last run → current run (heat/momentum deltas)
+  function computeRising(prevRows, currRows) {
+    if (!Array.isArray(prevRows) || !Array.isArray(currRows)) return [];
+    const prevMap = new Map(prevRows.map((r) => [r.theme, r]));
+    const deltas = currRows.map((r) => {
+      const before = prevMap.get(r.theme);
+      const dHeat = (r.heat ?? 0) - (before?.heat ?? 0);
+      const dMom = (r.momentum ?? 0) - (before?.momentum ?? 0);
+      const score = dHeat * 0.7 + dMom * 0.3;
+      return { theme: r.theme, dHeat, dMom, score };
+    }).filter((x) => x.dHeat > 0 || x.dMom > 0);
+    deltas.sort((a, b) => b.score - a.score);
+    return deltas.slice(0, 5);
+  }
+
   async function runResearch() {
     setLoadingRun(true);
     setTopRows([]);
     setBullets([]);
     setLeaders([]);
+    setRising([]);
+    setSampleSize(0);
+
+    let prevRows = [];
+    try {
+      const rawPrev = localStorage.getItem(LS_KEY_LAST_RUN);
+      if (rawPrev) {
+        const parsed = JSON.parse(rawPrev);
+        if (Array.isArray(parsed?.rows)) prevRows = parsed.rows;
+      }
+    } catch {}
 
     try {
-      // 1) Run the research
       const res = await fetch("/api/research/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -304,18 +340,31 @@ export default function App() {
       const json = await res.json();
       const rows = mapRunToRows(json);
 
-      // Normalize numbers so downstream always has finite values
+      // Normalize numbers and ensure citations array
       const normalized = rows.map((r) => ({
         ...r,
         heat: Number.isFinite(r.heat) ? r.heat : 0,
         momentum: Number.isFinite(r.momentum) ? r.momentum : 0,
         forecast: Number.isFinite(r.forecast) ? r.forecast : 0,
         confidence: Number.isFinite(r.confidence) ? r.confidence : 0,
+        citations: Array.isArray(r.citations) ? r.citations : [],
       }));
 
       setTopRows(normalized);
+      setSampleSize(Number(json?.totalSignals ?? 0));
+      const nowIso = new Date().toISOString();
+      setLastRunAt(nowIso);
 
-      // 2) Parallel follow-ups
+      // Persist current run for next delta calc
+      try {
+        localStorage.setItem(LS_KEY_LAST_RUN, JSON.stringify({ at: nowIso, rows: normalized }));
+      } catch {}
+
+      // Rising
+      const risingNow = computeRising(prevRows, normalized);
+      setRising(risingNow);
+
+      // Parallel follow-ups
       fetchLeaders();
       fetchInsight(normalized);
     } catch (e) {
@@ -323,6 +372,13 @@ export default function App() {
     } finally {
       setLoadingRun(false);
     }
+  }
+
+  // open sources modal for a row
+  function handleOpenSources(row) {
+    setModalTheme(row.theme);
+    setModalCitations(row.citations ?? []);
+    setModalOpen(true);
   }
 
   return (
@@ -349,8 +405,12 @@ export default function App() {
             <div className="stat__value">{keywords.length}</div>
           </div>
           <div className="stat">
-            <div className="stat__label">Region</div>
-            <div className="stat__value">{region}</div>
+            <div className="stat__label">Signals (last run)</div>
+            <div className="stat__value">{sampleSize}</div>
+          </div>
+          <div className="stat">
+            <div className="stat__label">Last run</div>
+            <div className="stat__value">{lastRunAt ? new Date(lastRunAt).toLocaleTimeString() : "—"}</div>
           </div>
         </div>
       </div>
@@ -376,21 +436,51 @@ export default function App() {
 
       {/* Panels */}
       <div className="panel-grid">
-        <TopMoversTable rows={topRows} loading={loadingRun} onLink={() => {}} />
+        <TopMoversTable rows={topRows} loading={loadingRun} onOpenSources={handleOpenSources} />
         <LeadersPanel items={leaders} loading={loadingLeaders} />
+
+        {/* What's rising */}
         <div className="card" style={{ gridColumn: "1 / -1" }}>
           <div className="card__title">What’s rising</div>
           <div className="card__body">
-            <div className="empty">—</div>
+            {rising.length === 0 ? (
+              <div className="empty">—</div>
+            ) : (
+              <div className="tbl tbl--dense">
+                <div className="tbl__row tbl__head" style={{ gridTemplateColumns: "1fr .6fr .6fr .6fr" }}>
+                  <div className="tbl__cell tbl__headcell">Theme</div>
+                  <div className="tbl__cell tbl__headcell tbl__cell--num">Δ Heat</div>
+                  <div className="tbl__cell tbl__headcell tbl__cell--num">Δ Momentum</div>
+                  <div className="tbl__cell tbl__headcell tbl__cell--num">Score</div>
+                </div>
+                {rising.map((x) => (
+                  <div key={x.theme} className="tbl__row" style={{ gridTemplateColumns: "1fr .6fr .6fr .6fr" }}>
+                    <div className="tbl__cell">{x.theme}</div>
+                    <div className="tbl__cell tbl__cell--num">{fmtNum(x.dHeat)}</div>
+                    <div className="tbl__cell tbl__cell--num">{fmtNum(x.dMom)}</div>
+                    <div className="tbl__cell tbl__cell--num">{fmtNum(x.score)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
+
         <WhyPanel bullets={bullets} loading={loadingInsight} onRegenerate={() => fetchInsight()} />
       </div>
 
       {/* Footer */}
       <div style={{ color: "var(--muted)", textAlign: "center", marginTop: 28 }}>
-        Built with ♥ — data from YouTube, GDELT & Google Trends.
+        Built with ♥ — data from YouTube, GDELT & Google Trends (more sources coming).
       </div>
+
+      {/* Sources drawer */}
+      <SourcesModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        theme={modalTheme}
+        citations={modalCitations}
+      />
     </div>
   );
 }

@@ -109,3 +109,17 @@ body{
 
 /* tiny helper for muted captions */
 .caption{ color:var(--muted); font-size:12px; margin-top:8px }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal {
+  width: min(920px, 92vw); max-height: 84vh; overflow: auto;
+  background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.35); padding: 14px 16px;
+}
+.modal__header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 8px; }
+.modal__title { font-weight: 800; font-size: 18px; }
+.link { color: var(--accent); text-decoration: none; }
+.link:hover { text-decoration: underline; }
